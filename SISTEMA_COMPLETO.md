@@ -238,6 +238,14 @@ python start.py
 - HTTPS con ngrok
 - Input sanitizzati
 - SQL injection protetto
+- Dipendenze aggiornate (Pillow 10.3.0 - patched buffer overflow CVE)
+
+## Aggiornamenti di Sicurezza
+
+### 2026-02-04 - Pillow Security Update
+- **Vulnerabilità**: Buffer overflow in Pillow < 10.3.0
+- **Azione**: Aggiornato Pillow da 10.1.0 a 10.3.0
+- **Stato**: ✅ Risolto
 
 ## 📈 Prestazioni
 
