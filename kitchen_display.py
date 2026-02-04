@@ -13,6 +13,11 @@ from PyQt5.QtGui import QFont, QColor, QPalette
 import database as db
 from datetime import datetime
 
+# Use status constants from database module
+STATUS_INSERTED = db.ORDER_STATUS_INSERTED
+STATUS_IN_PROGRESS = db.ORDER_STATUS_IN_PROGRESS
+STATUS_DELIVERED = db.ORDER_STATUS_DELIVERED
+
 class OrderCard(QFrame):
     """Widget representing a single order card."""
     
@@ -77,9 +82,9 @@ class OrderCard(QFrame):
         # Action buttons
         buttons = QHBoxLayout()
         
-        if order['status'] == 'Inserito':
+        if order['status'] == STATUS_INSERTED:
             start_btn = QPushButton("▶️ Inizia Lavorazione")
-            start_btn.clicked.connect(lambda: self.change_status('In Lavorazione'))
+            start_btn.clicked.connect(lambda: self.change_status(STATUS_IN_PROGRESS))
             start_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #3498db;
@@ -95,9 +100,9 @@ class OrderCard(QFrame):
             """)
             buttons.addWidget(start_btn)
         
-        elif order['status'] == 'In Lavorazione':
+        elif order['status'] == STATUS_IN_PROGRESS:
             ready_btn = QPushButton("✅ Pronto per Servizio")
-            ready_btn.clicked.connect(lambda: self.change_status('Consegnato'))
+            ready_btn.clicked.connect(lambda: self.change_status(STATUS_DELIVERED))
             ready_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #27ae60;
@@ -122,21 +127,21 @@ class OrderCard(QFrame):
     
     def update_style(self):
         """Update the card style based on status."""
-        if self.order['status'] == 'Inserito':
+        if self.order['status'] == STATUS_INSERTED:
             self.setStyleSheet("""
                 OrderCard {
                     background-color: #fff9e6;
                     border: 2px solid #f39c12;
                 }
             """)
-        elif self.order['status'] == 'In Lavorazione':
+        elif self.order['status'] == STATUS_IN_PROGRESS:
             self.setStyleSheet("""
                 OrderCard {
                     background-color: #e8f4fd;
                     border: 2px solid #3498db;
                 }
             """)
-        elif self.order['status'] == 'Consegnato':
+        elif self.order['status'] == STATUS_DELIVERED:
             self.setStyleSheet("""
                 OrderCard {
                     background-color: #e8f8e8;
@@ -269,11 +274,11 @@ class KitchenDisplay(QMainWindow):
         for order in orders:
             card = OrderCard(order, self)
             
-            if order['status'] == 'Inserito':
+            if order['status'] == STATUS_INSERTED:
                 self.inserted_column.scroll_layout.addWidget(card)
-            elif order['status'] == 'In Lavorazione':
+            elif order['status'] == STATUS_IN_PROGRESS:
                 self.processing_column.scroll_layout.addWidget(card)
-            elif order['status'] == 'Consegnato':
+            elif order['status'] == STATUS_DELIVERED:
                 self.ready_column.scroll_layout.addWidget(card)
     
     def clear_column(self, column):

@@ -4,19 +4,27 @@ Handles SQLite database operations for orders, users, and menu items.
 """
 
 import sqlite3
-import hashlib
 import pandas as pd
 from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
 import json
 import os
+from threading import Lock
 
 DB_PATH = "gestord.db"
+db_lock = Lock()
+
+# Order status constants
+ORDER_STATUS_INSERTED = 'Inserito'
+ORDER_STATUS_IN_PROGRESS = 'In Lavorazione'
+ORDER_STATUS_DELIVERED = 'Consegnato'
 
 def get_connection():
-    """Create and return a database connection."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Create and return a database connection with thread safety."""
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_database():
     """Initialize the database with required tables."""
@@ -95,7 +103,7 @@ def init_database():
     
     # Create default user if not exists
     try:
-        password_hash = hashlib.sha256("password123".encode()).hexdigest()
+        password_hash = generate_password_hash("password123", method='pbkdf2:sha256')
         cursor.execute(
             "INSERT INTO users (username, password_hash, full_name, role) VALUES (?, ?, ?, ?)",
             ("cameriere", password_hash, "Cameriere Default", "waiter")
@@ -107,24 +115,23 @@ def init_database():
     conn.close()
 
 def hash_password(password):
-    """Hash a password using SHA256."""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash a password using Werkzeug's secure method."""
+    return generate_password_hash(password, method='pbkdf2:sha256')
 
 def verify_user(username, password):
     """Verify user credentials."""
     conn = get_connection()
     cursor = conn.cursor()
     
-    password_hash = hash_password(password)
     cursor.execute(
-        "SELECT id, username, full_name, role FROM users WHERE username = ? AND password_hash = ?",
-        (username, password_hash)
+        "SELECT id, username, full_name, role, password_hash FROM users WHERE username = ?",
+        (username,)
     )
     
     user = cursor.fetchone()
     conn.close()
     
-    if user:
+    if user and check_password_hash(user['password_hash'], password):
         return {
             'id': user['id'],
             'username': user['username'],

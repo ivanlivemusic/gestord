@@ -53,7 +53,8 @@ def create_sample_orders():
         items=items2,
         notes=""
     )
-    db.update_order_status(order_id2, 'In Lavorazione')
+    # Update order statuses
+    db.update_order_status(order_id2, db.ORDER_STATUS_IN_PROGRESS)
     print(f"  ✅ Ordine #{order_id2} creato (Tavolo 2) - In Lavorazione")
     
     # Sample order 3 - Table 8
@@ -88,7 +89,7 @@ def create_sample_orders():
         items=items4,
         notes=""
     )
-    db.update_order_status(order_id4, 'Consegnato')
+    db.update_order_status(order_id4, db.ORDER_STATUS_DELIVERED)
     print(f"  ✅ Ordine #{order_id4} creato (Tavolo 1) - Consegnato")
     
     # Add a daily special
@@ -104,9 +105,9 @@ def create_sample_orders():
     print("\nStatistiche:")
     orders = db.get_all_orders()
     print(f"  • Totale ordini: {len(orders)}")
-    print(f"  • Nuovi: {len([o for o in orders if o['status'] == 'Inserito'])}")
-    print(f"  • In lavorazione: {len([o for o in orders if o['status'] == 'In Lavorazione'])}")
-    print(f"  • Consegnati: {len([o for o in orders if o['status'] == 'Consegnato'])}")
+    print(f"  • Nuovi: {len([o for o in orders if o['status'] == db.ORDER_STATUS_INSERTED])}")
+    print(f"  • In lavorazione: {len([o for o in orders if o['status'] == db.ORDER_STATUS_IN_PROGRESS])}")
+    print(f"  • Consegnati: {len([o for o in orders if o['status'] == db.ORDER_STATUS_DELIVERED])}")
     
     print("\n💡 Ora puoi:")
     print("  1. Avviare l'applicazione web: python webapp.py")

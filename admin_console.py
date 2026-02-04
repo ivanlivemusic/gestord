@@ -16,6 +16,11 @@ import database as db
 from datetime import datetime
 import os
 
+# Use status constants from database module
+STATUS_INSERTED = db.ORDER_STATUS_INSERTED
+STATUS_IN_PROGRESS = db.ORDER_STATUS_IN_PROGRESS
+STATUS_DELIVERED = db.ORDER_STATUS_DELIVERED
+
 class AddSpecialDialog(QDialog):
     """Dialog for adding daily specials."""
     
@@ -324,11 +329,11 @@ class AdminConsole(QMainWindow):
             
             # Status
             status_item = QTableWidgetItem(order['status'])
-            if order['status'] == 'Inserito':
+            if order['status'] == STATUS_INSERTED:
                 status_item.setBackground(QColor(255, 235, 156))  # Yellow
-            elif order['status'] == 'In Lavorazione':
+            elif order['status'] == STATUS_IN_PROGRESS:
                 status_item.setBackground(QColor(179, 229, 252))  # Blue
-            elif order['status'] == 'Consegnato':
+            elif order['status'] == STATUS_DELIVERED:
                 status_item.setBackground(QColor(200, 230, 201))  # Green
             self.orders_table.setItem(row, 5, status_item)
             
@@ -343,7 +348,7 @@ class AdminConsole(QMainWindow):
             
             # Actions (status change)
             status_combo = QComboBox()
-            status_combo.addItems(['Inserito', 'In Lavorazione', 'Consegnato'])
+            status_combo.addItems([STATUS_INSERTED, STATUS_IN_PROGRESS, STATUS_DELIVERED])
             status_combo.setCurrentText(order['status'])
             status_combo.currentTextChanged.connect(
                 lambda status, order_id=order['id']: self.change_order_status(order_id, status)

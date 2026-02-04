@@ -12,8 +12,21 @@ import base64
 import os
 import database as db
 
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask_socketio import SocketIO, emit
+from pyngrok import ngrok
+import qrcode
+import io
+import base64
+import os
+import database as db
+
+# Configuration
+SECRET_KEY = os.environ.get('SECRET_KEY', 'gestord-secret-key-change-in-production')
+PORT = int(os.environ.get('PORT', 5000))
+
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'gestord-secret-key-change-in-production'
+app.config['SECRET_KEY'] = SECRET_KEY
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Store the public URL
@@ -125,7 +138,9 @@ def update_order_status(order_id):
     data = request.get_json()
     status = data.get('status')
     
-    if status not in ['Inserito', 'In Lavorazione', 'Consegnato']:
+    # Use constants from database module
+    valid_statuses = [db.ORDER_STATUS_INSERTED, db.ORDER_STATUS_IN_PROGRESS, db.ORDER_STATUS_DELIVERED]
+    if status not in valid_statuses:
         return jsonify({'error': 'Stato non valido'}), 400
     
     db.update_order_status(order_id, status)
@@ -173,7 +188,7 @@ def start_ngrok():
             ngrok.set_auth_token(ngrok_token)
         
         # Start ngrok tunnel
-        public_url = ngrok.connect(5000, bind_tls=True)
+        public_url = ngrok.connect(PORT, bind_tls=True)
         print(f"\n{'='*60}")
         print(f"🌐 URL Pubblico: {public_url}")
         print(f"{'='*60}\n")
@@ -210,9 +225,9 @@ if __name__ == '__main__':
     start_ngrok()
     
     # Start Flask app with SocketIO
-    print("🌐 Server in ascolto su http://localhost:5000")
+    print(f"🌐 Server in ascolto su http://localhost:{PORT}")
     print("\n👤 Credenziali default:")
     print("   Username: cameriere")
     print("   Password: password123\n")
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=PORT, debug=False)
