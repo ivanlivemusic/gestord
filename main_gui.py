@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
         self.qr_check_timer.timeout.connect(self.check_webapp_status)
         self.qr_check_timer.start(2000)
         
-        # Auto-start all components
+        # Auto-start all components after GUI is fully initialized
         QTimer.singleShot(500, self.auto_start_all_components)
     
     def append_log(self, message):
