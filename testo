@@ -1,0 +1,14 @@
+il programma deve essere scritto in pyhon diviso un due sezioni
+
+
+cameriere:
+una per il cameriere accessibile tramite una pagine web compatibile con i cellulari, questa pagina web deve prevedere una forma di login basata su user e password per ogni cameriere
+nella pagina web il cameriere deve essere in grado di selezionare le portate e la quantità. il tutto tramite dei macromenu che comprendono antipasti, primi (da suddividere in sottocategorie carne e pesce), secondi (da suddividere in sottocagorie carne e pesce), contorni, Dolci, Pizzeria, Bevande ( da suddividere in sottocategorie Bibite, Alcolici), Vegetariani, Vegani, Caffetteria 
+nella compilazione dei campi come primi dati il camerire deve inserire anche il numero di persone del tavolo ed il numero del tavolo. lo stato di consegnato deve essere modificato da parte del cameriere ed avere effetti sulla consolle di amministrazione.
+
+
+il file da quale deve prendere il menu deve essere un file csv che si avrà locale nel pc che creera il qr code con ngrock per fare l'accesso a questa pagina web. 
+
+consolle amministrazione
+deve mostrare in una tabella il dettaglio degli ordini mettendolo in ordine decrescente dal quando sono stati inoltrati salvando come informazione anche il time stamp di quando sono stati inseriti , inserendo anche il nome del cameriere che ha preso l'ordine, anche questo file  deve prendere il menu deve essere un file csv che si avrà locale nel pc
+per ogni categoria deve prevedere di cambiare lo stato della portata, piatto ecc in 3 stati inserito, in lavorazione , consegnato.
