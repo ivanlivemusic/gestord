@@ -161,7 +161,7 @@ class KitchenDisplay(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GestOrd - Display Cucina")
-        self.showMaximized()
+        self.showFullScreen()
         
         # Initialize database
         db.init_database()
