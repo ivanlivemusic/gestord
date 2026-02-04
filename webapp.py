@@ -173,7 +173,8 @@ def start_ngrok():
     global public_url
     
     try:
-        # Set ngrok auth token - use hardcoded token or environment variable
+        # NOTE: Token is hardcoded per project requirements
+        # Can be overridden with NGROK_AUTH_TOKEN environment variable
         ngrok_token = os.environ.get('NGROK_AUTH_TOKEN', '33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX')
         if ngrok_token:
             ngrok.set_auth_token(ngrok_token)

@@ -349,7 +349,7 @@ class MainWindow(QMainWindow):
         else:
             self.append_log("🚀 Avvio Applicazione Web...")
             self.statusBar().showMessage("Avvio Applicazione Web...")
-            if self.monitor.start_process('webapp', ['python3', 'webapp.py']):
+            if self.monitor.start_process('webapp', [sys.executable, 'webapp.py']):
                 self.webapp_btn.setText("🛑 Ferma Applicazione Web")
                 self.statusBar().showMessage("Applicazione Web avviata")
             else:
@@ -366,7 +366,7 @@ class MainWindow(QMainWindow):
         else:
             self.append_log("🚀 Avvio Consolle Amministrazione...")
             self.statusBar().showMessage("Avvio Consolle Amministrazione...")
-            if self.monitor.start_process('admin', ['python3', 'admin_console.py']):
+            if self.monitor.start_process('admin', [sys.executable, 'admin_console.py']):
                 self.admin_btn.setText("🛑 Ferma Consolle Amministrazione")
                 self.statusBar().showMessage("Consolle Amministrazione avviata")
             else:
@@ -383,7 +383,7 @@ class MainWindow(QMainWindow):
         else:
             self.append_log("🚀 Avvio Display Cucina...")
             self.statusBar().showMessage("Avvio Display Cucina...")
-            if self.monitor.start_process('kitchen', ['python3', 'kitchen_display.py']):
+            if self.monitor.start_process('kitchen', [sys.executable, 'kitchen_display.py']):
                 self.kitchen_btn.setText("🛑 Ferma Display Cucina")
                 self.statusBar().showMessage("Display Cucina avviato")
             else:

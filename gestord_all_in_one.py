@@ -477,6 +477,8 @@ def start_webapp():
         nonlocal public_url
         
         try:
+            # NOTE: Token is hardcoded per project requirements
+            # Can be overridden with NGROK_AUTH_TOKEN environment variable
             ngrok_token = os.environ.get('NGROK_AUTH_TOKEN', '33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX')
             if ngrok_token:
                 ngrok.set_auth_token(ngrok_token)
@@ -557,13 +559,13 @@ def main():
         start_webapp()
         return
     elif args.admin:
-        subprocess.run(['python3', 'admin_console.py'])
+        subprocess.run([sys.executable, 'admin_console.py'])
         return
     elif args.kitchen:
-        subprocess.run(['python3', 'kitchen_display.py'])
+        subprocess.run([sys.executable, 'kitchen_display.py'])
         return
     elif args.gui:
-        subprocess.run(['python3', 'main_gui.py'])
+        subprocess.run([sys.executable, 'main_gui.py'])
         return
     elif args.init_db:
         init_database()
@@ -581,13 +583,13 @@ def main():
                 start_webapp()
             elif choice == '2':
                 print("\n🚀 Avvio Consolle Amministrazione...")
-                subprocess.run(['python3', 'admin_console.py'])
+                subprocess.run([sys.executable, 'admin_console.py'])
             elif choice == '3':
                 print("\n🚀 Avvio Display Cucina...")
-                subprocess.run(['python3', 'kitchen_display.py'])
+                subprocess.run([sys.executable, 'kitchen_display.py'])
             elif choice == '4':
                 print("\n🚀 Avvio Launcher GUI...")
-                subprocess.run(['python3', 'main_gui.py'])
+                subprocess.run([sys.executable, 'main_gui.py'])
             elif choice == '5':
                 print("\n🔧 Inizializzazione Database...")
                 init_database()
