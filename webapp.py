@@ -14,7 +14,7 @@ import database as db
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'gestord-secret-key-change-in-production'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Store the public URL
 public_url = None
