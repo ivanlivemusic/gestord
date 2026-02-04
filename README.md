@@ -1,11 +1,20 @@
 # GestOrd - Sistema di Gestione Ordini Ristorante
 
 Sistema completo per la gestione degli ordini di un ristorante, composto da:
+- **Launcher GUI Principale** con QR Code integrato
 - **Applicazione Web per Camerieri** (compatibile mobile)
-- **Consolle Desktop di Amministrazione**
+- **Consolle Desktop di Amministrazione** con editor menu integrato
 - **Interfaccia per la Cucina**
+- **Versione Single-File** per facilità di distribuzione
 
 ## Caratteristiche
+
+### Launcher GUI Principale (NUOVO!)
+- Interfaccia grafica unificata per avviare tutti i componenti
+- Visualizzazione QR Code in finestra separata per accesso remoto
+- Gestione centralizzata di web app, consolle admin e display cucina
+- Monitoraggio real-time dei processi attivi
+- Log attività integrato
 
 ### Applicazione Web Cameriere
 - Login sicuro con username e password
@@ -17,7 +26,7 @@ Sistema completo per la gestione degli ordini di un ristorante, composto da:
 - Gestione ordini con numero tavolo e persone
 - Carrello con quantità e totale
 - Aggiornamento stato ordini in tempo reale (WebSocket)
-- Accesso tramite QR Code e ngrok (opzionale)
+- Accesso tramite QR Code e ngrok (token integrato)
 - Interfaccia responsive ottimizzata per mobile
 
 ### Consolle Amministrazione
@@ -25,7 +34,11 @@ Sistema completo per la gestione degli ordini di un ristorante, composto da:
 - Tabella ordinata per timestamp decrescente
 - Dettagli completi di ogni ordine (tavolo, persone, cameriere, portate)
 - Modifica stato ordini (Inserito → In Lavorazione → Consegnato)
-- Caricamento menu da CSV
+- **Editor Menu Integrato (NUOVO!):**
+  - Aggiungi, modifica, elimina piatti direttamente dall'interfaccia
+  - Non serve più modificare il CSV manualmente
+  - Gestione completa di categorie, sottocategorie, prezzi e descrizioni
+- Caricamento menu da CSV (opzionale)
 - Gestione offerte del giorno
 - Aggiunta nuovi camerieri
 - Aggiornamento automatico ogni 5 secondi
@@ -58,14 +71,39 @@ pip install -r requirements.txt
 
 ## Utilizzo
 
-### Metodo 1: Script di Avvio Interattivo (Consigliato)
+### Metodo 1: Launcher GUI (Consigliato per Windows/Desktop)
+```bash
+python main_gui.py
+```
+
+Questo aprirà un'interfaccia grafica con pulsanti per:
+- Avviare/fermare l'applicazione web
+- Avviare/fermare la consolle amministrazione
+- Avviare/fermare il display cucina
+- Visualizzare il QR Code per l'accesso remoto
+- Monitorare i log di tutti i componenti
+
+### Metodo 2: Script di Avvio Interattivo (Terminale)
 ```bash
 python start.py
 ```
 
-Questo mostrerà un menu interattivo per lanciare i vari componenti.
+Questo mostrerà un menu interattivo in modalità testuale per lanciare i vari componenti.
 
-### Metodo 2: Avvio Manuale dei Componenti
+### Metodo 3: Versione Single-File (Per facilità di distribuzione)
+```bash
+python gestord_all_in_one.py
+```
+
+Questa versione contiene tutto il sistema in un unico file. Opzioni disponibili:
+```bash
+python gestord_all_in_one.py --webapp      # Solo web app
+python gestord_all_in_one.py --admin       # Solo consolle admin
+python gestord_all_in_one.py --kitchen     # Solo display cucina
+python gestord_all_in_one.py --init-db     # Inizializza database
+```
+
+### Metodo 4: Avvio Manuale dei Componenti
 
 #### Avviare l'Applicazione Web
 ```bash
@@ -159,11 +197,9 @@ Le offerte possono essere gestite dalla consolle di amministrazione senza modifi
 Le offerte sono valide per la data corrente e appaiono in alto nel menu web.
 
 ### Ngrok (Accesso Remoto)
-Per abilitare l'accesso remoto tramite ngrok:
+Il sistema include un token ngrok preconfigurato per l'accesso remoto immediato.
 
-1. Registrati su https://ngrok.com
-2. Ottieni il tuo auth token
-3. Imposta la variabile d'ambiente:
+**Token integrato:** Il sistema usa automaticamente il token configurato, ma puoi sovrascriverlo con la variabile d'ambiente:
 ```bash
 export NGROK_AUTH_TOKEN="your_token_here"
 ```
@@ -171,6 +207,7 @@ export NGROK_AUTH_TOKEN="your_token_here"
 L'applicazione web genererà automaticamente:
 - URL pubblico accessibile da Internet
 - QR Code salvato in `qr_code.txt`
+- QR Code visualizzabile dal Launcher GUI
 
 **Nota:** Ngrok è opzionale. Senza, l'app funziona solo sulla rete locale.
 
@@ -178,6 +215,8 @@ L'applicazione web genererà automaticamente:
 
 ```
 gestord/
+├── main_gui.py           # Launcher GUI principale (NUOVO)
+├── gestord_all_in_one.py # Versione single-file (NUOVO)
 ├── webapp.py              # Applicazione web Flask
 ├── admin_console.py       # Consolle desktop amministrazione (PyQt5)
 ├── kitchen_display.py     # Interfaccia cucina (PyQt5)
