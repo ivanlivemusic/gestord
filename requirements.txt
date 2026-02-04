@@ -1,0 +1,11 @@
+Flask==3.0.0
+Flask-SocketIO==5.3.5
+Flask-Login==0.6.3
+python-socketio==5.10.0
+eventlet==0.33.3
+qrcode==7.4.2
+Pillow==10.1.0
+pandas==2.1.4
+PyQt5==5.15.10
+pyngrok==7.0.5
+werkzeug==3.0.1

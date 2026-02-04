@@ -1,0 +1,55 @@
+Categoria,Sottocategoria,Nome,Prezzo,Descrizione
+Antipasti,,Bruschetta al Pomodoro,6.50,Pane tostato con pomodori freschi e basilico
+Antipasti,,Prosciutto e Melone,8.00,Prosciutto crudo con melone fresco
+Antipasti,,Antipasto Misto,12.00,Selezione di salumi e formaggi locali
+Antipasti,,Caprese,7.50,Mozzarella di bufala con pomodori e basilico
+Primi,Carne,Lasagne alla Bolognese,10.00,Lasagne fatte in casa con ragù di carne
+Primi,Carne,Tagliatelle al Ragù,9.50,Pasta fresca con ragù tradizionale
+Primi,Carne,Pappardelle al Cinghiale,12.00,Pasta larga con sugo di cinghiale
+Primi,Pesce,Spaghetti alle Vongole,11.00,Spaghetti con vongole fresche
+Primi,Pesce,Risotto ai Frutti di Mare,13.00,Risotto cremoso con frutti di mare misti
+Primi,Pesce,Linguine allo Scoglio,14.00,Linguine con crostacei e molluschi
+Primi,,Pasta al Pomodoro,7.00,Pasta con pomodoro fresco e basilico
+Secondi,Carne,Bistecca alla Fiorentina,25.00,Bistecca di manzo alla griglia (400g)
+Secondi,Carne,Tagliata di Manzo,18.00,Manzo tagliato con rucola e grana
+Secondi,Carne,Pollo alla Griglia,12.00,Petto di pollo marinato e grigliato
+Secondi,Carne,Ossobuco alla Milanese,16.00,Ossobuco con risotto alla milanese
+Secondi,Pesce,Branzino al Forno,16.00,Branzino intero al forno con patate
+Secondi,Pesce,Grigliata Mista di Pesce,22.00,Selezione di pesce fresco alla griglia
+Secondi,Pesce,Salmone alla Griglia,15.00,Filetto di salmone con verdure
+Contorni,,Insalata Mista,4.50,Insalata fresca di stagione
+Contorni,,Patate al Forno,4.00,Patate arrosto con rosmarino
+Contorni,,Verdure Grigliate,5.50,Mix di verdure grigliate
+Contorni,,Spinaci Saltati,4.50,Spinaci freschi saltati in padella
+Dolci,,Tiramisù,6.00,Tiramisù fatto in casa
+Dolci,,Panna Cotta,5.50,Panna cotta con frutti di bosco
+Dolci,,Torta della Nonna,5.00,Torta tradizionale con crema e pinoli
+Dolci,,Gelato Artigianale,4.50,Gelato fatto in casa (2 gusti)
+Pizzeria,,Margherita,7.00,Pomodoro mozzarella e basilico
+Pizzeria,,Diavola,8.50,Pomodoro mozzarella e salame piccante
+Pizzeria,,Quattro Stagioni,9.00,Pomodoro mozzarella funghi prosciutto carciofi olive
+Pizzeria,,Capricciosa,9.00,Pomodoro mozzarella funghi prosciutto carciofi
+Pizzeria,,Quattro Formaggi,9.50,Quattro formaggi senza pomodoro
+Pizzeria,,Prosciutto e Funghi,8.50,Pomodoro mozzarella prosciutto e funghi
+Bevande,Bibite,Acqua Naturale (1L),2.00,Acqua minerale naturale
+Bevande,Bibite,Acqua Frizzante (1L),2.00,Acqua minerale frizzante
+Bevande,Bibite,Coca Cola,3.00,Coca Cola 33cl
+Bevande,Bibite,Aranciata,3.00,Aranciata 33cl
+Bevande,Bibite,Succo di Frutta,3.50,Succhi vari 20cl
+Bevande,Alcolici,Vino Rosso (Bottiglia),15.00,Vino rosso della casa
+Bevande,Alcolici,Vino Bianco (Bottiglia),15.00,Vino bianco della casa
+Bevande,Alcolici,Prosecco (Bottiglia),18.00,Prosecco DOC
+Bevande,Alcolici,Birra alla Spina (Media),4.50,Birra chiara 40cl
+Bevande,Alcolici,Birra alla Spina (Grande),6.00,Birra chiara 60cl
+Vegetariani,,Melanzane alla Parmigiana,9.00,Melanzane con pomodoro e mozzarella
+Vegetariani,,Risotto ai Funghi Porcini,11.00,Risotto cremoso con funghi porcini
+Vegetariani,,Pizza Vegetariana,9.00,Pomodoro mozzarella e verdure grigliate
+Vegani,,Pasta al Pomodoro e Basilico,7.50,Pasta con pomodoro fresco (senza formaggi)
+Vegani,,Verdure al Vapore,6.00,Mix di verdure al vapore
+Vegani,,Insalata Vegana,7.00,Insalata mista con semi e olio EVO
+Caffetteria,,Caffè Espresso,1.50,Caffè espresso
+Caffetteria,,Cappuccino,2.50,Cappuccino italiano
+Caffetteria,,Caffè Macchiato,1.80,Caffè macchiato
+Caffetteria,,Caffè Americano,2.00,Caffè americano
+Caffetteria,,Tè,2.50,Tè caldo (varie qualità)
+Caffetteria,,Caffè Corretto,3.00,Caffè con grappa o sambuca

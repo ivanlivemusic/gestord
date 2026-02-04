@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menu - GestOrd</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>🍽️ GestOrd</h1>
+            <div class="header-info">
+                <span class="waiter-name">{{ waiter_name }}</span>
+                <a href="/logout" class="btn btn-secondary btn-sm">Esci</a>
+            </div>
+        </header>
+
+        <div class="order-form-container">
+            <div class="order-info">
+                <div class="form-group">
+                    <label for="tableNumber">Numero Tavolo</label>
+                    <input type="number" id="tableNumber" min="1" required>
+                </div>
+                <div class="form-group">
+                    <label for="numPeople">Numero Persone</label>
+                    <input type="number" id="numPeople" min="1" required>
+                </div>
+            </div>
+
+            <div class="order-notes">
+                <label for="orderNotes">Note Ordine</label>
+                <textarea id="orderNotes" rows="2" placeholder="Note aggiuntive..."></textarea>
+            </div>
+        </div>
+
+        <div id="specialsSection" class="menu-section" style="display: none;">
+            <h2 class="section-title">⭐ Offerte del Giorno</h2>
+            <div id="specialsContainer" class="menu-items"></div>
+        </div>
+
+        <div id="menuContainer"></div>
+
+        <div class="cart-summary" id="cartSummary" style="display: none;">
+            <h3>Riepilogo Ordine</h3>
+            <div id="cartItems"></div>
+            <div class="cart-total">
+                <strong>Totale: €<span id="cartTotal">0.00</span></strong>
+            </div>
+            <button class="btn btn-primary btn-lg" onclick="submitOrder()">Invia Ordine</button>
+            <button class="btn btn-secondary" onclick="clearCart()">Svuota</button>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/menu.js') }}"></script>
+</body>
+</html>
