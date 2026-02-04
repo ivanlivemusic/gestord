@@ -118,6 +118,75 @@ class AddUserDialog(QDialog):
             'full_name': self.full_name_input.text()
         }
 
+class AddMenuItemDialog(QDialog):
+    """Dialog for adding/editing menu items."""
+    
+    def __init__(self, parent=None, item=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modifica Piatto" if item else "Aggiungi Nuovo Piatto")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        
+        layout = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.description_input = QTextEdit()
+        self.description_input.setMaximumHeight(80)
+        self.price_input = QDoubleSpinBox()
+        self.price_input.setRange(0, 1000)
+        self.price_input.setDecimals(2)
+        self.price_input.setSuffix(" €")
+        
+        self.category_input = QComboBox()
+        self.category_input.addItems([
+            'Antipasti', 'Primi', 'Secondi', 'Contorni',
+            'Pizzeria', 'Dolci', 'Bevande', 'Vegetariani', 'Vegani', 'Caffetteria'
+        ])
+        
+        self.subcategory_input = QComboBox()
+        self.subcategory_input.setEditable(True)
+        self.subcategory_input.addItems(['', 'Carne', 'Pesce', 'Bibite', 'Alcolici'])
+        
+        # If editing existing item, populate fields
+        if item:
+            self.name_input.setText(item['nome'])
+            self.description_input.setPlainText(item['descrizione'] or '')
+            self.price_input.setValue(item['prezzo'])
+            self.category_input.setCurrentText(item['categoria'])
+            self.subcategory_input.setCurrentText(item['sottocategoria'] or '')
+        
+        layout.addRow("Nome:", self.name_input)
+        layout.addRow("Descrizione:", self.description_input)
+        layout.addRow("Prezzo:", self.price_input)
+        layout.addRow("Categoria:", self.category_input)
+        layout.addRow("Sottocategoria:", self.subcategory_input)
+        
+        buttons = QHBoxLayout()
+        save_btn = QPushButton("Salva")
+        save_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Annulla")
+        cancel_btn.clicked.connect(self.reject)
+        
+        buttons.addWidget(save_btn)
+        buttons.addWidget(cancel_btn)
+        
+        main_layout = QVBoxLayout()
+        main_layout.addLayout(layout)
+        main_layout.addLayout(buttons)
+        
+        self.setLayout(main_layout)
+    
+    def get_data(self):
+        """Get the entered data."""
+        return {
+            'nome': self.name_input.text(),
+            'descrizione': self.description_input.toPlainText(),
+            'prezzo': self.price_input.value(),
+            'categoria': self.category_input.currentText(),
+            'sottocategoria': self.subcategory_input.currentText()
+        }
+
+
 class AdminConsole(QMainWindow):
     """Main admin console window."""
     
@@ -221,26 +290,43 @@ class AdminConsole(QMainWindow):
         load_btn = QPushButton("📂 Carica da CSV")
         load_btn.clicked.connect(self.load_menu_csv)
         
+        add_item_btn = QPushButton("➕ Aggiungi Piatto")
+        add_item_btn.clicked.connect(self.add_menu_item)
+        
         header.addWidget(title)
         header.addStretch()
+        header.addWidget(add_item_btn)
         header.addWidget(load_btn)
         
         layout.addLayout(header)
         
         # Info label
         info_label = QLabel(
-            "Il menu viene caricato automaticamente da 'menu.csv' all'avvio.\n"
-            "Modificare il file CSV e cliccare 'Carica da CSV' per aggiornare."
+            "Gestisci il menu del ristorante. Puoi aggiungere, modificare o eliminare piatti direttamente qui, "
+            "oppure caricare un file CSV."
         )
+        info_label.setWordWrap(True)
         layout.addWidget(info_label)
         
-        # Menu preview
-        self.menu_display = QTextEdit()
-        self.menu_display.setReadOnly(True)
-        layout.addWidget(self.menu_display)
+        # Menu table
+        self.menu_table = QTableWidget()
+        self.menu_table.setColumnCount(6)
+        self.menu_table.setHorizontalHeaderLabels([
+            "Nome", "Categoria", "Sottocategoria", "Prezzo", "Descrizione", "Azioni"
+        ])
         
-        # Load menu preview
-        self.update_menu_display()
+        header = self.menu_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        
+        layout.addWidget(self.menu_table)
+        
+        # Load menu items
+        self.refresh_menu_table()
         
         widget.setLayout(layout)
         return widget
@@ -373,26 +459,141 @@ class AdminConsole(QMainWindow):
         if file_path:
             if db.load_menu_from_csv(file_path):
                 QMessageBox.information(self, "Successo", "Menu caricato con successo!")
-                self.update_menu_display()
+                self.refresh_menu_table()
             else:
                 QMessageBox.critical(self, "Errore", "Errore nel caricamento del menu")
     
-    def update_menu_display(self):
-        """Update the menu display."""
-        menu = db.get_menu_by_categories()
+    def refresh_menu_table(self):
+        """Refresh the menu items table."""
+        # Get all menu items
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, nome, categoria, sottocategoria, prezzo, descrizione
+            FROM menu_items
+            ORDER BY categoria, sottocategoria, nome
+        """)
+        items = cursor.fetchall()
+        conn.close()
         
-        text = "<h3>Menu del Ristorante</h3>"
+        self.menu_table.setRowCount(len(items))
         
-        for category, subcategories in menu.items():
-            text += f"<h4>{category}</h4>"
-            for subcategory, items in subcategories.items():
-                if subcategory != 'Generale':
-                    text += f"<b>{subcategory}</b><br>"
-                for item in items:
-                    text += f"• {item['nome']} - €{item['prezzo']:.2f}<br>"
-            text += "<br>"
+        for row, item in enumerate(items):
+            item_dict = {
+                'id': item[0],
+                'nome': item[1],
+                'categoria': item[2],
+                'sottocategoria': item[3],
+                'prezzo': item[4],
+                'descrizione': item[5]
+            }
+            
+            self.menu_table.setItem(row, 0, QTableWidgetItem(item[1]))
+            self.menu_table.setItem(row, 1, QTableWidgetItem(item[2]))
+            self.menu_table.setItem(row, 2, QTableWidgetItem(item[3] or ''))
+            self.menu_table.setItem(row, 3, QTableWidgetItem(f"€{item[4]:.2f}"))
+            self.menu_table.setItem(row, 4, QTableWidgetItem(item[5] or ''))
+            
+            # Action buttons
+            actions = QWidget()
+            actions_layout = QHBoxLayout()
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            
+            edit_btn = QPushButton("✏️")
+            edit_btn.setMaximumWidth(40)
+            edit_btn.clicked.connect(lambda checked, d=item_dict: self.edit_menu_item(d))
+            
+            delete_btn = QPushButton("🗑️")
+            delete_btn.setMaximumWidth(40)
+            delete_btn.clicked.connect(lambda checked, item_id=item[0], name=item[1]: self.delete_menu_item(item_id, name))
+            
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(delete_btn)
+            actions.setLayout(actions_layout)
+            
+            self.menu_table.setCellWidget(row, 5, actions)
+    
+    def add_menu_item(self):
+        """Add a new menu item."""
+        dialog = AddMenuItemDialog(self)
         
-        self.menu_display.setHtml(text)
+        if dialog.exec_() == QDialog.Accepted:
+            data = dialog.get_data()
+            
+            if not data['nome'] or data['prezzo'] <= 0:
+                QMessageBox.warning(self, "Attenzione", "Nome e prezzo sono obbligatori")
+                return
+            
+            # Add to database
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO menu_items (categoria, sottocategoria, nome, prezzo, descrizione)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                data['categoria'],
+                data['sottocategoria'] if data['sottocategoria'] else None,
+                data['nome'],
+                data['prezzo'],
+                data['descrizione'] if data['descrizione'] else None
+            ))
+            conn.commit()
+            conn.close()
+            
+            QMessageBox.information(self, "Successo", "Piatto aggiunto con successo!")
+            self.refresh_menu_table()
+    
+    def edit_menu_item(self, item):
+        """Edit an existing menu item."""
+        dialog = AddMenuItemDialog(self, item)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            data = dialog.get_data()
+            
+            if not data['nome'] or data['prezzo'] <= 0:
+                QMessageBox.warning(self, "Attenzione", "Nome e prezzo sono obbligatori")
+                return
+            
+            # Update in database
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE menu_items
+                SET categoria = ?, sottocategoria = ?, nome = ?, prezzo = ?, descrizione = ?
+                WHERE id = ?
+            """, (
+                data['categoria'],
+                data['sottocategoria'] if data['sottocategoria'] else None,
+                data['nome'],
+                data['prezzo'],
+                data['descrizione'] if data['descrizione'] else None,
+                item['id']
+            ))
+            conn.commit()
+            conn.close()
+            
+            QMessageBox.information(self, "Successo", "Piatto modificato con successo!")
+            self.refresh_menu_table()
+    
+    def delete_menu_item(self, item_id, item_name):
+        """Delete a menu item."""
+        reply = QMessageBox.question(
+            self,
+            'Conferma Eliminazione',
+            f'Eliminare il piatto "{item_name}"?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
+            conn.commit()
+            conn.close()
+            
+            QMessageBox.information(self, "Successo", "Piatto eliminato con successo!")
+            self.refresh_menu_table()
     
     def add_special(self):
         """Add a daily special."""
