@@ -292,25 +292,10 @@ class MainWindow(QMainWindow):
         
         main_layout.addLayout(buttons_layout)
         
-        # Log section
-        log_label = QLabel("📋 Log Attività:")
-        log_label.setFont(QFont("Arial", 10, QFont.Bold))
-        main_layout.addWidget(log_label)
-        
+        # Log section (hidden)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
-        self.log_text.setStyleSheet("""
-            QTextEdit {
-                background-color: #ecf0f1;
-                border: 1px solid #bdc3c7;
-                border-radius: 5px;
-                padding: 5px;
-                font-family: 'Courier New', monospace;
-                font-size: 10px;
-            }
-        """)
-        main_layout.addWidget(self.log_text)
+        self.log_text.hide()  # Hide the log
         
         central_widget.setLayout(main_layout)
         
@@ -321,6 +306,9 @@ class MainWindow(QMainWindow):
         self.qr_check_timer = QTimer(self)
         self.qr_check_timer.timeout.connect(self.check_webapp_status)
         self.qr_check_timer.start(2000)
+        
+        # Auto-start all components after GUI is fully initialized
+        QTimer.singleShot(500, self.auto_start_all_components)
     
     def append_log(self, message):
         """Append message to log."""
@@ -335,6 +323,39 @@ class MainWindow(QMainWindow):
             self.qr_btn.setEnabled(True)
         else:
             self.qr_btn.setEnabled(False)
+    
+    def auto_start_all_components(self):
+        """Automatically start all components on launch."""
+        self.append_log("🚀 Avvio automatico di tutti i componenti...")
+        
+        # Start Web App
+        if not self.monitor.is_running('webapp'):
+            self.append_log("🚀 Avvio Applicazione Web...")
+            if self.monitor.start_process('webapp', [sys.executable, 'webapp.py']):
+                self.webapp_btn.setText("🛑 Ferma Applicazione Web")
+                self.append_log("✅ Applicazione Web avviata")
+            else:
+                self.append_log("❌ Impossibile avviare Applicazione Web")
+        
+        # Start Admin Console
+        if not self.monitor.is_running('admin'):
+            self.append_log("🚀 Avvio Consolle Amministrazione...")
+            if self.monitor.start_process('admin', [sys.executable, 'admin_console.py']):
+                self.admin_btn.setText("🛑 Ferma Consolle Amministrazione")
+                self.append_log("✅ Consolle Amministrazione avviata")
+            else:
+                self.append_log("❌ Impossibile avviare Consolle Amministrazione")
+        
+        # Start Kitchen Display
+        if not self.monitor.is_running('kitchen'):
+            self.append_log("🚀 Avvio Display Cucina...")
+            if self.monitor.start_process('kitchen', [sys.executable, 'kitchen_display.py']):
+                self.kitchen_btn.setText("🛑 Ferma Display Cucina")
+                self.append_log("✅ Display Cucina avviato")
+            else:
+                self.append_log("❌ Impossibile avviare Display Cucina")
+        
+        self.statusBar().showMessage("Tutti i componenti avviati")
     
     def toggle_webapp(self):
         """Start or stop the web application."""
