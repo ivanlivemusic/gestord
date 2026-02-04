@@ -7,7 +7,7 @@
 ## 🎯 Caratteristiche Implementate
 
 ### ✅ Applicazione Web per Camerieri
-- **Login sicuro** con username/password (SHA256 hash)
+- **Login sicuro** con username/password (PBKDF2-SHA256 hash)
 - **Menu dinamico** caricato da CSV con 10 categorie:
   - Antipasti, Primi (Carne/Pesce), Secondi (Carne/Pesce)
   - Contorni, Pizzeria, Dolci, Bevande (Bibite/Alcolici)
@@ -233,7 +233,7 @@ python start.py
 
 ## 🔐 Sicurezza
 
-- Password hashate (SHA256)
+- Password hashate (PBKDF2-SHA256 con salt)
 - Session-based auth
 - HTTPS con ngrok
 - Input sanitizzati

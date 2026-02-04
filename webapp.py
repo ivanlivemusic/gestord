@@ -12,15 +12,6 @@ import base64
 import os
 import database as db
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
-from flask_socketio import SocketIO, emit
-from pyngrok import ngrok
-import qrcode
-import io
-import base64
-import os
-import database as db
-
 # Configuration
 SECRET_KEY = os.environ.get('SECRET_KEY', 'gestord-secret-key-change-in-production')
 PORT = int(os.environ.get('PORT', 5000))
