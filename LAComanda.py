@@ -23,6 +23,7 @@ import time
 import configparser
 import json
 import logging
+import re
 from datetime import datetime
 from io import BytesIO
 import csv
@@ -744,6 +745,7 @@ class ConfigManager:
     
     def create_default_config(self):
         """Crea configurazione default"""
+        # Main window è nascosta (withdrawn), dimensioni minime intenzionali
         self.config['main_window'] = {
             'x': '0',
             'y': '0',
@@ -794,13 +796,15 @@ class ConfigManager:
     def save_window_geometry(self, window_name, window):
         """Salva geometria e stato finestra Tkinter"""
         try:
-            geometry = window.geometry()  # Formato: "widthxheight+x+y"
+            geometry = window.geometry()  # Formato: "widthxheight+x+y" or "widthxheight-x-y"
             state = window.state()  # normal, zoomed, iconic
             
-            # Parse geometry string
-            parts = geometry.replace('+', 'x').replace('-', 'x').split('x')
-            if len(parts) >= 4:
-                width, height, x, y = parts[0], parts[1], parts[2], parts[3]
+            # Parse geometry string preserving sign of coordinates
+            # Format: WIDTHxHEIGHT±X±Y (e.g., "800x600+100+50" or "800x600-20+50")
+            match = re.match(r'(\d+)x(\d+)([-+]\d+)([-+]\d+)', geometry)
+            
+            if match:
+                width, height, x, y = match.groups()
                 
                 config = {
                     'width': width,
@@ -849,16 +853,14 @@ class ConfigManager:
     
     def bind_window_save(self, window_name, window):
         """Bind evento Configure per salvare automaticamente geometria"""
-        def on_configure(event):
-            # Salva solo se l'evento è sulla finestra principale, non sui widget figli
-            if event.widget == window:
-                self.save_window_geometry(window_name, window)
-        
         # Usa debouncing per evitare troppi salvataggi durante resize
         def debounced_save(event):
-            if hasattr(window, '_save_timer'):
-                window.after_cancel(window._save_timer)
-            window._save_timer = window.after(500, lambda: on_configure(event))
+            # Salva solo se l'evento è sulla finestra principale, non sui widget figli
+            if event.widget == window:
+                if hasattr(window, '_save_timer'):
+                    window.after_cancel(window._save_timer)
+                # Salva il riferimento window direttamente invece di catturare event
+                window._save_timer = window.after(500, lambda: self.save_window_geometry(window_name, window))
         
         window.bind('<Configure>', debounced_save)
 
