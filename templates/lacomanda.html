@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>La Comanda - Gestione Ordini</title>
     <style>
+        :root {
+            --primary-color: #667eea;
+            --primary-dark: #5568d3;
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --success-color: #28a745;
+            --success-light: #f0fff4;
+            --danger-color: #dc3545;
+            --dark-color: #2c3e50;
+            --dark-gradient: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+        }
+        
         * {
             margin: 0;
             padding: 0;
@@ -13,7 +24,7 @@
         
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--primary-gradient);
             min-height: 100vh;
             padding: 20px;
         }
@@ -28,7 +39,7 @@
         }
         
         .header {
-            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            background: var(--dark-gradient);
             color: white;
             padding: 30px;
             text-align: center;
@@ -83,7 +94,7 @@
         .info-field input:focus,
         .info-field select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--primary-color);
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
         
@@ -96,7 +107,7 @@
         }
         
         .category-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--primary-gradient);
             color: white;
             padding: 15px 20px;
             border-radius: 10px;
@@ -122,14 +133,14 @@
         }
         
         .menu-item:hover {
-            border-color: #667eea;
+            border-color: var(--primary-color);
             box-shadow: 0 8px 25px rgba(102, 126, 234, 0.2);
             transform: translateY(-2px);
         }
         
         .menu-item.selected {
-            border-color: #28a745;
-            background: #f0fff4;
+            border-color: var(--success-color);
+            background: var(--success-light);
             box-shadow: 0 8px 25px rgba(40, 167, 69, 0.3);
         }
         
@@ -155,7 +166,7 @@
         .item-price {
             font-size: 1.3em;
             font-weight: bold;
-            color: #667eea;
+            color: var(--primary-color);
         }
         
         .quantity-controls {
@@ -165,7 +176,7 @@
         }
         
         .quantity-btn {
-            background: #667eea;
+            background: var(--primary-color);
             color: white;
             border: none;
             width: 35px;
@@ -180,7 +191,7 @@
         }
         
         .quantity-btn:hover {
-            background: #5568d3;
+            background: var(--primary-dark);
             transform: scale(1.1);
         }
         
@@ -194,7 +205,7 @@
         .cart-summary {
             position: sticky;
             bottom: 0;
-            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            background: var(--dark-gradient);
             color: white;
             padding: 25px 30px;
             box-shadow: 0 -5px 20px rgba(0, 0, 0, 0.2);
@@ -275,13 +286,13 @@
         }
         
         .filter-btn:hover {
-            border-color: #667eea;
+            border-color: var(--primary-color);
         }
         
         .filter-btn.active {
-            background: #667eea;
+            background: var(--primary-color);
             color: white;
-            border-color: #667eea;
+            border-color: var(--primary-color);
         }
         
         .logout-btn {
@@ -300,7 +311,7 @@
         }
         
         .logout-btn:hover {
-            background: #c82333;
+            background: var(--danger-color);
         }
         
         @media (max-width: 768px) {
@@ -322,7 +333,7 @@
             top: 80px;
             right: 20px;
             padding: 20px 30px;
-            background: #28a745;
+            background: var(--success-color);
             color: white;
             border-radius: 10px;
             box-shadow: 0 8px 25px rgba(40, 167, 69, 0.4);
@@ -368,15 +379,15 @@
         </div>
         
         <div class="filters" id="filters">
-            <button class="filter-btn active" onclick="filterCategory('all')">Tutto</button>
-            <button class="filter-btn" onclick="filterCategory('Antipasti')">Antipasti</button>
-            <button class="filter-btn" onclick="filterCategory('Primi')">Primi</button>
-            <button class="filter-btn" onclick="filterCategory('Secondi')">Secondi</button>
-            <button class="filter-btn" onclick="filterCategory('Contorni')">Contorni</button>
-            <button class="filter-btn" onclick="filterCategory('Pizzeria')">Pizzeria</button>
-            <button class="filter-btn" onclick="filterCategory('Dolci')">Dolci</button>
-            <button class="filter-btn" onclick="filterCategory('Bevande')">Bevande</button>
-            <button class="filter-btn" onclick="filterCategory('Caffetteria')">Caffetteria</button>
+            <button class="filter-btn active" onclick="filterCategory('all', event)">Tutto</button>
+            <button class="filter-btn" onclick="filterCategory('Antipasti', event)">Antipasti</button>
+            <button class="filter-btn" onclick="filterCategory('Primi', event)">Primi</button>
+            <button class="filter-btn" onclick="filterCategory('Secondi', event)">Secondi</button>
+            <button class="filter-btn" onclick="filterCategory('Contorni', event)">Contorni</button>
+            <button class="filter-btn" onclick="filterCategory('Pizzeria', event)">Pizzeria</button>
+            <button class="filter-btn" onclick="filterCategory('Dolci', event)">Dolci</button>
+            <button class="filter-btn" onclick="filterCategory('Bevande', event)">Bevande</button>
+            <button class="filter-btn" onclick="filterCategory('Caffetteria', event)">Caffetteria</button>
         </div>
         
         <div class="menu-section" id="menuContainer">
@@ -653,14 +664,16 @@
             });
         }
         
-        function filterCategory(category) {
+        function filterCategory(category, event) {
             currentFilter = category;
             
             // Update active button
             document.querySelectorAll('.filter-btn').forEach(btn => {
                 btn.classList.remove('active');
             });
-            event.target.classList.add('active');
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
             
             renderMenu();
         }
@@ -677,7 +690,7 @@
             notification.textContent = message;
             
             if (type === 'error') {
-                notification.style.background = '#dc3545';
+                notification.style.background = 'var(--danger-color)';
             }
             
             document.body.appendChild(notification);

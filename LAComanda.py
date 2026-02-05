@@ -42,8 +42,14 @@ from pyngrok import ngrok
 # CONFIGURAZIONE
 # ==============================================================================
 
-NGROK_TOKEN = "33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX"
-SECRET_KEY = 'la-comanda-secret-key-change-in-production'
+# Ngrok token (configurable via environment variable per maggiore sicurezza)
+# Per produzione, usa: export NGROK_AUTH_TOKEN="your_token_here"
+NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX")
+
+# Flask secret key (configurable via environment variable per maggiore sicurezza)
+# Per produzione, usa: export FLASK_SECRET_KEY="your_random_secret_key_here"
+SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'la-comanda-secret-key-change-in-production')
+
 PORT = 5000
 DB_NAME = 'lacomanda.db'
 CONFIG_FILE = 'LaComanda.conf'
