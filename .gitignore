@@ -51,3 +51,6 @@ qr_code.png
 
 # ngrok
 ngrok.yml
+
+# La Comanda configuration (user-specific)
+LaComanda.conf

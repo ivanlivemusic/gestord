@@ -1,0 +1,30 @@
+# La Comanda - Template File di Configurazione
+# www.ivanlivemusic.com
+#
+# Questo è un file template. Il file LaComanda.conf verrà generato
+# automaticamente al primo avvio dell'applicazione.
+# Copia questo file in LaComanda.conf per personalizzare la configurazione.
+
+[admin_console]
+# Posizione della finestra consolle amministrazione
+x = 100
+y = 100
+width = 1000
+height = 700
+maximized = False
+
+[kitchen_display]
+# Posizione della finestra display cucina
+x = 100
+y = 100
+width = 1024
+height = 768
+maximized = False
+
+[qr_window]
+# Posizione della finestra QR code
+x = 200
+y = 200
+width = 500
+height = 600
+maximized = False
