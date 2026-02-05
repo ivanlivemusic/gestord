@@ -712,11 +712,11 @@ class WebApp:
         
         @self.socketio.on('connect')
         def handle_connect():
-            print('Client connesso')
+            logger.info('Client WebSocket connesso')
         
         @self.socketio.on('disconnect')
         def handle_disconnect():
-            print('Client disconnesso')
+            logger.info('Client WebSocket disconnesso')
     
     def run(self):
         """Avvia server Flask"""
@@ -2066,24 +2066,25 @@ class LaComanda:
         self.admin_console = AdminConsole(self.root, self.database, self.webapp.socketio, self.config_manager)
         self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager)
         
-        print(f"\n{'='*60}")
-        print(f"🍽️  LA COMANDA - SISTEMA AVVIATO")
-        print(f"{'='*60}")
-        print(f"🌐 URL Web: {self.ngrok_url}")
-        print(f"🏠 URL Locale: http://localhost:{PORT}/cameriere")
-        print(f"👨‍💼 Console Amministrazione: APERTA")
-        print(f"👨‍�� Display Cucina: APERTO")
-        print(f"📱 Finestra QR Code: APERTA")
-        print(f"{'='*60}\n")
+        logger.info("=" * 60)
+        logger.info("🍽️  LA COMANDA - SISTEMA AVVIATO")
+        logger.info("=" * 60)
+        logger.info(f"🌐 URL Web: {self.ngrok_url}")
+        logger.info(f"🏠 URL Locale: http://localhost:{PORT}/cameriere")
+        logger.info("👨‍💼 Console Amministrazione: APERTA")
+        logger.info("👨‍🍳 Display Cucina: APERTO")
+        logger.info("📱 Finestra QR Code: APERTA")
+        logger.info("=" * 60)
     
     def start_ngrok(self):
         """Avvia ngrok"""
         try:
             ngrok.set_auth_token(NGROK_TOKEN)
             public_url = ngrok.connect(PORT, bind_tls=True)
+            logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
             return public_url.public_url
         except Exception as e:
-            print(f"⚠️ Errore ngrok: {e}")
+            logger.warning(f"Errore ngrok: {e}. Utilizzo localhost.")
             return f"http://localhost:{PORT}"
     
     def run(self):
@@ -2096,12 +2097,12 @@ class LaComanda:
 # ==============================================================================
 
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("🍽️  LA COMANDA - Sistema di Gestione Ordini Ristorante")
-    print("   www.ivanlivemusic.com")
-    print("="*60 + "\n")
+    logger.info("\n" + "="*60)
+    logger.info("🍽️  LA COMANDA - Sistema di Gestione Ordini Ristorante")
+    logger.info("   www.ivanlivemusic.com")
+    logger.info("="*60 + "\n")
     
-    print("Inizializzazione...")
+    logger.info("Inizializzazione sistema...")
     
     app = LaComanda()
     app.run()
