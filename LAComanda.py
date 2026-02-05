@@ -744,6 +744,13 @@ class ConfigManager:
     
     def create_default_config(self):
         """Crea configurazione default"""
+        self.config['main_window'] = {
+            'x': '0',
+            'y': '0',
+            'width': '200',
+            'height': '100',
+            'state': 'withdrawn'
+        }
         self.config['admin_console'] = {
             'x': '50',
             'y': '50',
@@ -783,6 +790,77 @@ class ConfigManager:
         for key, value in config_dict.items():
             self.config[window_name][key] = str(value)
         self.save_config()
+    
+    def save_window_geometry(self, window_name, window):
+        """Salva geometria e stato finestra Tkinter"""
+        try:
+            geometry = window.geometry()  # Formato: "widthxheight+x+y"
+            state = window.state()  # normal, zoomed, iconic
+            
+            # Parse geometry string
+            parts = geometry.replace('+', 'x').replace('-', 'x').split('x')
+            if len(parts) >= 4:
+                width, height, x, y = parts[0], parts[1], parts[2], parts[3]
+                
+                config = {
+                    'width': width,
+                    'height': height,
+                    'x': x,
+                    'y': y,
+                    'state': state
+                }
+                
+                self.save_window_config(window_name, config)
+                logger.debug(f"Salvata geometria finestra {window_name}: {geometry}, state={state}")
+        except Exception as e:
+            logger.error(f"Errore salvataggio geometria finestra {window_name}: {e}")
+    
+    def restore_window_geometry(self, window_name, window, default_geometry="800x600+100+100"):
+        """Ripristina geometria e stato finestra Tkinter"""
+        try:
+            config = self.get_window_config(window_name)
+            
+            if config and 'width' in config and 'height' in config:
+                width = config.get('width', '800')
+                height = config.get('height', '600')
+                x = config.get('x', '100')
+                y = config.get('y', '100')
+                state = config.get('state', 'normal')
+                
+                geometry = f"{width}x{height}+{x}+{y}"
+                window.geometry(geometry)
+                
+                # Ripristina stato (normal, zoomed, iconic)
+                if state == 'zoomed':
+                    window.state('zoomed')
+                elif state == 'iconic':
+                    window.state('iconic')
+                else:
+                    window.state('normal')
+                
+                logger.debug(f"Ripristinata geometria finestra {window_name}: {geometry}, state={state}")
+            else:
+                # Usa geometria default
+                window.geometry(default_geometry)
+                logger.debug(f"Usata geometria default per finestra {window_name}: {default_geometry}")
+        except Exception as e:
+            logger.error(f"Errore ripristino geometria finestra {window_name}: {e}")
+            window.geometry(default_geometry)
+    
+    def bind_window_save(self, window_name, window):
+        """Bind evento Configure per salvare automaticamente geometria"""
+        def on_configure(event):
+            # Salva solo se l'evento è sulla finestra principale, non sui widget figli
+            if event.widget == window:
+                self.save_window_geometry(window_name, window)
+        
+        # Usa debouncing per evitare troppi salvataggi durante resize
+        def debounced_save(event):
+            if hasattr(window, '_save_timer'):
+                window.after_cancel(window._save_timer)
+            window._save_timer = window.after(500, lambda: on_configure(event))
+        
+        window.bind('<Configure>', debounced_save)
 
 
 # ==============================================================================
@@ -799,18 +877,15 @@ class QRCodeWindow:
         
         self.window = tk.Toplevel(parent)
         self.window.title("🔗 Accesso Web - La Comanda")
-        
-        # Carica configurazione
-        config = self.config_manager.get_window_config('qr_window')
-        width = int(config.get('width', 400))
-        height = int(config.get('height', 500))
-        x = int(config.get('x', 100))
-        y = int(config.get('y', 100))
-        
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
         self.window.configure(bg=COLORS['background'])
         
+        # Ripristina geometria salvata
+        self.config_manager.restore_window_geometry('qr_window', self.window, "400x500+100+100")
+        
         self.setup_ui()
+        
+        # Bind per salvare automaticamente su resize/move
+        self.config_manager.bind_window_save('qr_window', self.window)
         
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -902,12 +977,7 @@ class QRCodeWindow:
     
     def on_close(self):
         """Salva configurazione al chiudere"""
-        self.config_manager.save_window_config('qr_window', {
-            'x': self.window.winfo_x(),
-            'y': self.window.winfo_y(),
-            'width': self.window.winfo_width(),
-            'height': self.window.winfo_height()
-        })
+        self.config_manager.save_window_geometry('qr_window', self.window)
         self.window.destroy()
 
 
@@ -927,17 +997,14 @@ class AdminConsole:
         self.window = tk.Toplevel(parent)
         self.window.title("👨‍💼 Console Amministrazione - La Comanda")
         
-        # Carica configurazione
-        config = self.config_manager.get_window_config('admin_console')
-        width = int(config.get('width', 1400))
-        height = int(config.get('height', 900))
-        x = int(config.get('x', 50))
-        y = int(config.get('y', 50))
-        
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
+        # Ripristina geometria salvata
+        self.config_manager.restore_window_geometry('admin_console', self.window, "1400x900+50+50")
         
         self.setup_ui()
         self.refresh_orders()
+        
+        # Bind per salvare automaticamente su resize/move
+        self.config_manager.bind_window_save('admin_console', self.window)
         
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1744,12 +1811,7 @@ DETTAGLIO ORDINE
     
     def on_close(self):
         """Salva configurazione al chiudere"""
-        self.config_manager.save_window_config('admin_console', {
-            'x': self.window.winfo_x(),
-            'y': self.window.winfo_y(),
-            'width': self.window.winfo_width(),
-            'height': self.window.winfo_height()
-        })
+        self.config_manager.save_window_geometry('admin_console', self.window)
         self.window.destroy()
 
 
@@ -1767,22 +1829,19 @@ class KitchenDisplay:
         
         self.window = tk.Toplevel(parent)
         self.window.title("👨‍🍳 Display Cucina - La Comanda")
-        
-        # Carica configurazione
-        config = self.config_manager.get_window_config('kitchen_display')
-        width = int(config.get('width', 1000))
-        height = int(config.get('height', 700))
-        x = int(config.get('x', 200))
-        y = int(config.get('y', 100))
-        
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
         self.window.configure(bg=COLORS['background'])
+        
+        # Ripristina geometria salvata
+        self.config_manager.restore_window_geometry('kitchen_display', self.window, "1000x700+200+100")
         
         self.setup_ui()
         self.refresh_display()
         
         # Auto-refresh ogni 5 secondi
         self.auto_refresh()
+        
+        # Bind per salvare automaticamente su resize/move
+        self.config_manager.bind_window_save('kitchen_display', self.window)
         
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1954,13 +2013,17 @@ class KitchenDisplay:
     
     def on_close(self):
         """Salva configurazione al chiudere"""
-        self.config_manager.save_window_config('kitchen_display', {
-            'x': self.window.winfo_x(),
-            'y': self.window.winfo_y(),
-            'width': self.window.winfo_width(),
-            'height': self.window.winfo_height(),
-            'splitter_positions': '300,600'  # TODO: salvare posizioni reali splitters
-        })
+        # Salva geometria finestra
+        self.config_manager.save_window_geometry('kitchen_display', self.window)
+        
+        # Salva posizioni splitter se disponibili
+        try:
+            if hasattr(self, 'paned'):
+                # TODO: Implementare salvataggio posizioni reali dei panes se necessario
+                pass
+        except Exception as e:
+            logger.error(f"Errore salvataggio posizioni splitter: {e}")
+        
         self.window.destroy()
 
 
