@@ -413,8 +413,8 @@
         });
         
         function loadCameriereInfo() {
-            // In una vera app, questo verrebbe dalla sessione
-            document.getElementById('cameriere').value = 'Cameriere ({{ session.full_name }})';
+            // Carica nome cameriere dalla sessione Flask
+            document.getElementById('cameriere').value = '{{ session.get("full_name", "Cameriere") }}';
         }
         
         function loadMenu() {
