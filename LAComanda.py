@@ -22,6 +22,7 @@ import threading
 import time
 import configparser
 import json
+import logging
 from datetime import datetime
 from io import BytesIO
 import csv
@@ -45,6 +46,17 @@ from pyngrok import ngrok
 # ==============================================================================
 # CONFIGURAZIONE
 # ==============================================================================
+
+# Configura sistema di logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('lacomanda.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # SECURITY NOTE: For production, set NGROK_AUTH_TOKEN environment variable
 # Current hardcoded token is for development/testing only
@@ -99,6 +111,7 @@ class Database:
     def __init__(self, db_name=DB_NAME):
         self.db_name = db_name
         self.init_database()
+        self.upgrade_schema()
     
     def get_connection(self):
         """Crea connessione al database"""
@@ -188,6 +201,61 @@ class Database:
             self.add_user("cameriere", "password", "Cameriere Default")
         
         conn.close()
+    
+    def upgrade_schema(self):
+        """Aggiorna schema database per retrocompatibilità - aggiunge colonne mancanti"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Verifica colonne tabella orders
+            cursor.execute("PRAGMA table_info(orders)")
+            columns = {row[1] for row in cursor.fetchall()}
+            
+            # Aggiungi colonne mancanti nella tabella orders
+            if 'timestamp' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'timestamp' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN timestamp TEXT DEFAULT ''")
+                # Aggiorna i record esistenti con timestamp corrente
+                cursor.execute("UPDATE orders SET timestamp = datetime('now') WHERE timestamp = '' OR timestamp IS NULL")
+                conn.commit()
+            
+            if 'discount_type' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'discount_type' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN discount_type TEXT DEFAULT 'none'")
+                conn.commit()
+            
+            if 'discount_value' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'discount_value' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN discount_value REAL DEFAULT 0")
+                conn.commit()
+            
+            if 'status' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'status' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'inserito'")
+                conn.commit()
+            
+            if 'notes' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'notes' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN notes TEXT")
+                conn.commit()
+            
+            # Aggiungi indici per performance
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_timestamp ON orders(timestamp DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)")
+            
+            # Abilita WAL mode per migliori performance con concorrenza
+            cursor.execute("PRAGMA journal_mode=WAL")
+            
+            conn.commit()
+            logger.info("Schema database aggiornato con successo")
+            
+        except Exception as e:
+            logger.error(f"Errore durante aggiornamento schema: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
     
     def hash_password(self, password):
         """Hash password con SHA256"""
@@ -317,31 +385,47 @@ class Database:
         conn.close()
     
     def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes=""):
-        """Crea nuovo ordine"""
+        """Crea nuovo ordine con gestione errori"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        timestamp = datetime.now().isoformat()
-        
-        cursor.execute(
-            """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'inserito')""",
-            (table_number, num_people, waiter_id, waiter_name, timestamp, notes)
-        )
-        
-        order_id = cursor.lastrowid
-        
-        for item in items:
+        try:
+            timestamp = datetime.now().isoformat()
+            
             cursor.execute(
-                """INSERT INTO order_items (order_id, menu_item_id, menu_item_name, quantity, price, categoria)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (order_id, item['menu_item_id'], item['nome'], item['quantity'],
-                 item['prezzo'], item.get('categoria', ''))
+                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'inserito')""",
+                (table_number, num_people, waiter_id, waiter_name, timestamp, notes)
             )
-        
-        conn.commit()
-        conn.close()
-        return order_id
+            
+            order_id = cursor.lastrowid
+            
+            for item in items:
+                cursor.execute(
+                    """INSERT INTO order_items (order_id, menu_item_id, menu_item_name, quantity, price, categoria)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (order_id, item.get('menu_item_id', 0), item.get('nome', ''), 
+                     item.get('quantity', 1), item.get('prezzo', 0.0), item.get('categoria', ''))
+                )
+            
+            conn.commit()
+            logger.info(f"Ordine {order_id} creato nel database")
+            return order_id
+            
+        except sqlite3.Error as e:
+            logger.error(f"Errore database durante creazione ordine: {e}")
+            conn.rollback()
+            raise Exception(f"Errore database: {e}")
+        except KeyError as e:
+            logger.error(f"Campo mancante nei dati item: {e}")
+            conn.rollback()
+            raise Exception(f"Campo mancante in item ordine: {e}")
+        except Exception as e:
+            logger.error(f"Errore generico durante creazione ordine: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     
     def get_all_orders(self):
         """Ottieni tutti gli ordini con items"""
@@ -538,22 +622,64 @@ class WebApp:
         @self.app.route('/api/orders', methods=['POST'])
         def create_order():
             if 'user_id' not in session:
+                logger.warning("Tentativo di creare ordine senza autenticazione")
                 return jsonify({'success': False, 'error': 'Non autenticato'}), 401
             
-            data = request.json
-            order_id = self.database.create_order(
-                data['table_number'],
-                data['num_people'],
-                session['user_id'],
-                session['full_name'],
-                data['items'],
-                data.get('notes', '')
-            )
-            
-            # Notifica via socketio
-            self.socketio.emit('new_order', {'order_id': order_id}, namespace='/')
-            
-            return jsonify({'success': True, 'order_id': order_id})
+            try:
+                data = request.json
+                logger.info(f"Ricevuto ordine: {data}")
+                
+                # Validazione dati
+                if not data:
+                    logger.error("Dati JSON mancanti nella richiesta")
+                    return jsonify({'success': False, 'error': 'Dati mancanti'}), 400
+                
+                table_number = data.get('table_number')
+                num_people = data.get('num_people')
+                items = data.get('items', [])
+                notes = data.get('notes', '')
+                
+                # Verifica campi obbligatori
+                if not table_number:
+                    logger.error("Numero tavolo mancante")
+                    return jsonify({'success': False, 'error': 'Numero tavolo mancante'}), 400
+                
+                if not num_people:
+                    logger.error("Numero persone mancante")
+                    return jsonify({'success': False, 'error': 'Numero persone mancante'}), 400
+                
+                if not items or len(items) == 0:
+                    logger.error("Nessun item nell'ordine")
+                    return jsonify({'success': False, 'error': 'Ordine vuoto'}), 400
+                
+                # Crea ordine
+                order_id = self.database.create_order(
+                    table_number,
+                    num_people,
+                    session['user_id'],
+                    session['full_name'],
+                    items,
+                    notes
+                )
+                
+                logger.info(f"Ordine creato con successo: ID={order_id}, Tavolo={table_number}, Cameriere={session['full_name']}")
+                
+                # Notifica via socketio
+                try:
+                    self.socketio.emit('new_order', {'order_id': order_id}, namespace='/')
+                    logger.debug(f"Notifica SocketIO inviata per ordine {order_id}")
+                except Exception as socket_error:
+                    logger.error(f"Errore invio notifica SocketIO: {socket_error}")
+                    # Non fallire l'ordine se la notifica fallisce
+                
+                return jsonify({'success': True, 'order_id': order_id})
+                
+            except KeyError as ke:
+                logger.error(f"Campo mancante nei dati ordine: {ke}")
+                return jsonify({'success': False, 'error': f'Campo mancante: {ke}'}), 400
+            except Exception as e:
+                logger.error(f"Errore durante creazione ordine: {e}", exc_info=True)
+                return jsonify({'success': False, 'error': f'Errore interno: {str(e)}'}), 500
         
         @self.app.route('/api/orders/<int:order_id>/status', methods=['PUT'])
         def update_order_status(order_id):
