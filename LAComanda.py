@@ -46,7 +46,9 @@ from pyngrok import ngrok
 # CONFIGURAZIONE
 # ==============================================================================
 
-NGROK_TOKEN = "33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX"
+# SECURITY NOTE: For production, set NGROK_AUTH_TOKEN environment variable
+# Current hardcoded token is for development/testing only
+NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX")
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'la-comanda-secret-key-change-in-production')
 
 PORT = 5000
