@@ -1551,19 +1551,37 @@ class ConfigManager:
 # ==============================================================================
 
 class QRCodeWindow:
-    """Finestra QR Code migliorata"""
+    """Finestra QR Code migliorata con supporto per Cameriere e Cucina"""
+    
+    QR_MODES = {
+        'cameriere': {
+            'title': '📱 LA COMANDA - Cameriere',
+            'url_path': '/lacomanda/login',
+            'color': '#4A90E2',
+            'instruction': 'Inquadra il QR code o usa il link per accedere\nalla web app per camerieri'
+        },
+        'cucina': {
+            'title': '🍳 LA COMANDA - Cucina',
+            'url_path': '/lacomanda/login-cucina',
+            'color': '#FF6B35',
+            'instruction': 'Inquadra il QR code o usa il link per accedere\nalla web app per la cucina'
+        }
+    }
     
     def __init__(self, parent, ngrok_url, config_manager):
         self.parent = parent
         self.ngrok_url = ngrok_url
         self.config_manager = config_manager
         
+        # Carica modalità salvata o default a 'cameriere'
+        qr_config = self.config_manager.get_window_config('qr_window')
+        self.current_mode = qr_config.get('mode', 'cameriere')
+        
         self.window = tk.Toplevel(parent)
-        self.window.title("LA COMANDA - Accesso Web | www.ivanlivemusic.com")
         self.window.configure(bg=COLORS['background'])
         
         # Ripristina geometria salvata
-        self.config_manager.restore_window_geometry('qr_window', self.window, "400x500+100+100")
+        self.config_manager.restore_window_geometry('qr_window', self.window, "450x600+100+100")
         
         self.setup_ui()
         
@@ -1574,73 +1592,147 @@ class QRCodeWindow:
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
     def setup_ui(self):
-        """Setup UI migliorata"""
-        # Header
-        header = tk.Frame(self.window, bg=COLORS['primary'], height=80)
-        header.pack(fill='x')
-        header.pack_propagate(False)
+        """Setup UI migliorata con selezione modalità"""
+        mode_config = self.QR_MODES[self.current_mode]
         
-        title = tk.Label(header, text="�� Accesso Web", font=('Arial', 20, 'bold'),
-                        bg=COLORS['primary'], fg='white')
-        title.pack(pady=20)
+        # Aggiorna titolo finestra
+        self.window.title(f"{mode_config['title']} | www.ivanlivemusic.com")
+        
+        # Header
+        self.header = tk.Frame(self.window, bg=mode_config['color'], height=80)
+        self.header.pack(fill='x')
+        self.header.pack_propagate(False)
+        
+        self.title_label = tk.Label(self.header, text=mode_config['title'], 
+                                     font=('Arial', 20, 'bold'),
+                                     bg=mode_config['color'], fg='white')
+        self.title_label.pack(pady=20)
         
         # Container principale
         main_frame = tk.Frame(self.window, bg=COLORS['background'])
         main_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
+        # Selezione modalità
+        mode_frame = tk.Frame(main_frame, bg=COLORS['background'])
+        mode_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(mode_frame, text="Modalità:", font=('Arial', 11, 'bold'),
+                bg=COLORS['background']).pack(side='left', padx=(0, 10))
+        
+        self.mode_var = tk.StringVar(value=self.current_mode)
+        mode_combo = ttk.Combobox(mode_frame, textvariable=self.mode_var, 
+                                  values=['cameriere', 'cucina'],
+                                  state='readonly', width=15, font=('Arial', 11))
+        mode_combo.pack(side='left')
+        mode_combo.bind('<<ComboboxSelected>>', self.on_mode_change)
+        
         # Sezione URL
-        url_frame = tk.LabelFrame(main_frame, text="🔗 Link di accesso", font=('Arial', 12, 'bold'),
-                                  bg=COLORS['background'], fg=COLORS['primary'])
-        url_frame.pack(fill='x', pady=10)
+        self.url_frame = tk.LabelFrame(main_frame, text="🔗 Link di accesso", 
+                                       font=('Arial', 12, 'bold'),
+                                       bg=COLORS['background'], fg=mode_config['color'])
+        self.url_frame.pack(fill='x', pady=10)
         
         # URL display + Copy button
-        url_display_frame = tk.Frame(url_frame, bg=COLORS['background'])
+        url_display_frame = tk.Frame(self.url_frame, bg=COLORS['background'])
         url_display_frame.pack(fill='x', padx=10, pady=10)
         
-        self.url_text = tk.Entry(url_display_frame, font=('Courier', 11), justify='center',
+        self.url_text = tk.Entry(url_display_frame, font=('Courier', 10), justify='center',
                                  state='readonly', relief='flat', bg='white')
         self.url_text.pack(side='left', fill='x', expand=True, padx=(0, 10))
-        self.url_text.config(state='normal')
-        self.url_text.insert(0, f"{self.ngrok_url}/lacomanda/cameriere")
-        self.url_text.config(state='readonly')
         
-        copy_btn = tk.Button(url_display_frame, text="📋 Copia", font=('Arial', 10, 'bold'),
-                            bg=COLORS['accent'], fg='white', command=self.copy_url,
-                            relief='flat', padx=15, pady=5)
-        copy_btn.pack(side='left')
+        self.copy_btn = tk.Button(url_display_frame, text="📋 Copia", font=('Arial', 10, 'bold'),
+                                  bg=mode_config['color'], fg='white', command=self.copy_url,
+                                  relief='flat', padx=15, pady=5)
+        self.copy_btn.pack(side='left')
         
         # Sezione QR Code
-        qr_frame = tk.LabelFrame(main_frame, text="📱 Scansiona con smartphone",
-                                 font=('Arial', 12, 'bold'),
-                                 bg=COLORS['background'], fg=COLORS['primary'])
-        qr_frame.pack(fill='both', expand=True, pady=10)
+        self.qr_frame = tk.LabelFrame(main_frame, text="📱 Scansiona con smartphone",
+                                      font=('Arial', 12, 'bold'),
+                                      bg=COLORS['background'], fg=mode_config['color'])
+        self.qr_frame.pack(fill='both', expand=True, pady=10)
+        
+        # QR Code container con bordo colorato
+        self.qr_container = tk.Frame(self.qr_frame, bg=mode_config['color'], padx=10, pady=10)
+        self.qr_container.pack(pady=20)
         
         # Genera e mostra QR code
-        qr_label = tk.Label(qr_frame, bg='white')
-        qr_label.pack(pady=20)
-        
-        qr_img = self.generate_qr_code()
-        qr_label.config(image=qr_img)
-        qr_label.image = qr_img
+        self.qr_label = tk.Label(self.qr_container, bg='white')
+        self.qr_label.pack()
         
         # Istruzioni
-        instructions = tk.Label(main_frame, 
-                               text="ℹ️ Inquadra il QR code o usa il link per accedere\nalla web app per camerieri",
-                               font=('Arial', 10),
-                               bg=COLORS['background'], fg=COLORS['primary'],
-                               justify='center')
-        instructions.pack(pady=10)
+        self.instructions = tk.Label(main_frame, 
+                                     text=mode_config['instruction'],
+                                     font=('Arial', 10),
+                                     bg=COLORS['background'], fg=COLORS['primary'],
+                                     justify='center')
+        self.instructions.pack(pady=10)
         
         # Bottone apri browser
-        open_btn = tk.Button(main_frame, text="🌐 Apri nel Browser", font=('Arial', 11, 'bold'),
-                            bg=COLORS['secondary'], fg='white', command=self.open_browser,
-                            relief='flat', padx=20, pady=10)
-        open_btn.pack(pady=10)
+        self.open_btn = tk.Button(main_frame, text="🌐 Apri nel Browser", 
+                                  font=('Arial', 11, 'bold'),
+                                  bg=mode_config['color'], fg='white', 
+                                  command=self.open_browser,
+                                  relief='flat', padx=20, pady=10)
+        self.open_btn.pack(pady=10)
+        
+        # Aggiorna display
+        self.update_display()
+    
+    
+    
+    def on_mode_change(self, event=None):
+        """Callback quando cambia la modalità"""
+        self.current_mode = self.mode_var.get()
+        # Salva modalità in config
+        qr_config = self.config_manager.get_window_config('qr_window')
+        qr_config['mode'] = self.current_mode
+        self.config_manager.save_window_config('qr_window', qr_config)
+        
+        # Aggiorna display
+        self.update_display()
+    
+    def update_display(self):
+        """Aggiorna display in base alla modalità corrente"""
+        mode_config = self.QR_MODES[self.current_mode]
+        
+        # Aggiorna titolo finestra
+        self.window.title(f"{mode_config['title']} | www.ivanlivemusic.com")
+        
+        # Aggiorna colori header
+        self.header.config(bg=mode_config['color'])
+        self.title_label.config(text=mode_config['title'], bg=mode_config['color'])
+        
+        # Aggiorna colori frames
+        self.url_frame.config(fg=mode_config['color'])
+        self.qr_frame.config(fg=mode_config['color'])
+        
+        # Aggiorna colori bottoni
+        self.copy_btn.config(bg=mode_config['color'])
+        self.open_btn.config(bg=mode_config['color'])
+        
+        # Aggiorna bordo container QR
+        self.qr_container.config(bg=mode_config['color'])
+        
+        # Aggiorna URL
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        self.url_text.config(state='normal')
+        self.url_text.delete(0, 'end')
+        self.url_text.insert(0, full_url)
+        self.url_text.config(state='readonly')
+        
+        # Aggiorna istruzioni
+        self.instructions.config(text=mode_config['instruction'])
+        
+        # Rigenera QR code
+        qr_img = self.generate_qr_code()
+        self.qr_label.config(image=qr_img)
+        self.qr_label.image = qr_img
     
     def generate_qr_code(self):
-        """Genera QR code per accesso cameriere"""
-        # Aggiungi /lacomanda/cameriere al URL
-        full_url = f"{self.ngrok_url}/lacomanda/cameriere"
+        """Genera QR code per la modalità corrente"""
+        mode_config = self.QR_MODES[self.current_mode]
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        
         qr = qrcode.QRCode(version=1, box_size=8, border=2)
         qr.add_data(full_url)
         qr.make(fit=True)
@@ -1652,22 +1744,26 @@ class QRCodeWindow:
     
     def copy_url(self):
         """Copia URL negli appunti"""
-        full_url = f"{self.ngrok_url}/lacomanda/cameriere"
+        mode_config = self.QR_MODES[self.current_mode]
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
         self.window.clipboard_clear()
         self.window.clipboard_append(full_url)
         messagebox.showinfo("✅ Copiato", "Link copiato negli appunti!")
     
     def open_browser(self):
         """Apri URL nel browser"""
-        full_url = f"{self.ngrok_url}/lacomanda/cameriere"
+        mode_config = self.QR_MODES[self.current_mode]
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
         webbrowser.open(full_url)
     
     def on_close(self):
         """Salva configurazione al chiudere"""
         self.config_manager.save_window_geometry('qr_window', self.window)
+        # Salva anche la modalità corrente
+        qr_config = self.config_manager.get_window_config('qr_window')
+        qr_config['mode'] = self.current_mode
+        self.config_manager.save_window_config('qr_window', qr_config)
         self.window.destroy()
-
-
 # ==============================================================================
 # ADMIN CONSOLE - COMPLETAMENTE RINNOVATA
 # ==============================================================================
