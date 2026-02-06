@@ -6,21 +6,68 @@
     <title>Login Cucina - LA COMANDA</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <style>
+        :root {
+            --bg-color: #FFFFFF;
+            --text-color: #333333;
+            --card-bg: #F5F5F5;
+            --input-bg: #FFFFFF;
+            --border-color: #DDDDDD;
+        }
+
+        [data-theme="dark"] {
+            --bg-color: #1a1a1a;
+            --text-color: #E0E0E0;
+            --card-bg: #2d2d2d;
+            --input-bg: #3a3a3a;
+            --border-color: #444444;
+        }
+
         body {
             background: linear-gradient(135deg, #FF6B35 0%, #F7931E 100%);
         }
+        
+        [data-theme="dark"] body {
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+        }
+        
         .login-box {
             border-top: 5px solid #FF6B35;
+            background-color: var(--card-bg);
+            color: var(--text-color);
         }
+        
+        input {
+            background-color: var(--input-bg);
+            color: var(--text-color);
+            border-color: var(--border-color);
+        }
+        
         .btn-primary {
             background: #FF6B35;
         }
         .btn-primary:hover {
             background: #E65A2E;
         }
+        
+        #theme-toggle {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.2);
+            font-size: 20px;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
+    <button id="theme-toggle">
+        <span class="theme-icon">🌙</span>
+    </button>
+    
     <div class="login-container">
         <div class="login-box">
             <h1>🍳 LA COMANDA</h1>
@@ -45,5 +92,22 @@
             </form>
         </div>
     </div>
+    
+    <script>
+        // Theme management
+        const savedTheme = localStorage.getItem('lacomanda_theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        document.getElementById('theme-toggle').addEventListener('click', function() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('lacomanda_theme', newTheme);
+            this.querySelector('.theme-icon').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+        });
+
+        // Set initial icon
+        document.querySelector('.theme-icon').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
+    </script>
 </body>
 </html>

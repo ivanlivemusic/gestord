@@ -698,6 +698,38 @@ class Database:
         conn.commit()
         conn.close()
     
+    def get_orders_for_kitchen(self):
+        """Get orders for kitchen display - only CD with order_type='normal'"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT o.*, 
+                GROUP_CONCAT(oi.menu_item_name || ' x' || oi.quantity, ', ') as items_summary
+            FROM orders o
+            LEFT JOIN order_items oi ON o.id = oi.order_id
+            WHERE oi.tipo = 'CD'
+            AND (o.order_type = 'normal' OR o.order_type IS NULL)
+            AND o.status IN ('inserito', 'preparato', 'in_consegna')
+            GROUP BY o.id
+            ORDER BY o.timestamp ASC
+        """)
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order_dict = dict(order)
+            # Get detailed items
+            cursor.execute("""
+                SELECT menu_item_name as nome, quantity, tipo
+                FROM order_items
+                WHERE order_id = ? AND tipo = 'CD'
+            """, (order['id'],))
+            order_dict['items'] = [dict(row) for row in cursor.fetchall()]
+            result.append(order_dict)
+        
+        conn.close()
+        return result
+    
     def add_items_to_order(self, order_id, items):
         """Aggiungi items a ordine esistente"""
         conn = self.get_connection()
@@ -1378,30 +1410,13 @@ class WebApp:
         
         @self.app.route('/lacomanda/api/orders/kitchen')
         def get_kitchen_orders():
-            """API per pannello cucina - ottieni ordini CD con status inserito/preparato/in_consegna"""
+            """API for kitchen panel - returns only CD orders with order_type='normal'"""
+            if 'kitchen_user_id' not in session:
+                return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+            
             try:
-                # Get orders with only relevant statuses for kitchen
-                orders = self.database.get_orders_by_status(['inserito', 'preparato', 'in_consegna'])
-                
-                # Filter and format orders for kitchen
-                kitchen_orders = []
-                for order in orders:
-                    # Skip rapid and takeaway orders (show only normal orders)
-                    if order.get('order_type', 'normal') != 'normal':
-                        continue
-                    
-                    # Get order items
-                    items = self.database.get_order_items(order['id'])
-                    
-                    # Filter only CD items
-                    cd_items = [item for item in items if item.get('tipo') == 'CD']
-                    
-                    # Only include orders with CD items
-                    if cd_items:
-                        order['items'] = cd_items
-                        kitchen_orders.append(order)
-                
-                return jsonify({'success': True, 'orders': kitchen_orders})
+                orders = self.database.get_orders_for_kitchen()
+                return jsonify({'success': True, 'orders': orders})
             except Exception as e:
                 logger.error(f"Error getting kitchen orders: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
@@ -1915,6 +1930,9 @@ class AdminConsole:
         
         # TAB 7: ORARI E CONFIGURAZIONE
         self.setup_config_tab()
+        
+        # TAB 8: REMINDER CONFIGURATION
+        self.setup_reminder_tab()
     
     def setup_orders_tab(self):
         """TAB Gestione Ordini"""
@@ -3391,6 +3409,85 @@ DETTAGLIO ORDINE
         """Anteprima scontrino"""
         # TODO: Implementare anteprima scontrino
         messagebox.showinfo("Info", "Anteprima scontrino - Da implementare")
+    
+    def setup_reminder_tab(self):
+        """TAB Reminder Configuration"""
+        reminder_frame = tk.Frame(self.notebook, bg=COLORS['background'])
+        self.notebook.add(reminder_frame, text="🔔 Reminder")
+        
+        # Header
+        header = tk.Frame(reminder_frame, bg=COLORS['primary'], height=60)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="🔔 Configurazione Reminder", 
+                 font=('Arial', 18, 'bold'), fg='white', bg=COLORS['primary']).pack(pady=15)
+        
+        # Content with scrollbar
+        content = tk.Frame(reminder_frame, bg=COLORS['background'])
+        content.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Timer Settings
+        timer_frame = tk.LabelFrame(content, text="⏱️ Timeout Timer (minuti)", 
+                                     font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        timer_frame.pack(fill='x', pady=10)
+        
+        tk.Label(timer_frame, text="Timer CI (Consegna Immediata):", bg=COLORS['background']).grid(row=0, column=0, sticky='w', padx=10, pady=5)
+        self.ci_timeout_var = tk.StringVar(value=self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
+        tk.Entry(timer_frame, textvariable=self.ci_timeout_var, width=10).grid(row=0, column=1, padx=10, pady=5)
+        tk.Label(timer_frame, text="min → Avvisa cameriere", bg=COLORS['background']).grid(row=0, column=2, sticky='w', pady=5)
+        
+        tk.Label(timer_frame, text="Timer CD Inserito (Cucina):", bg=COLORS['background']).grid(row=1, column=0, sticky='w', padx=10, pady=5)
+        self.cd_timeout_var = tk.StringVar(value=self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
+        tk.Entry(timer_frame, textvariable=self.cd_timeout_var, width=10).grid(row=1, column=1, padx=10, pady=5)
+        tk.Label(timer_frame, text="min → Colonna REMINDER cucina", bg=COLORS['background']).grid(row=1, column=2, sticky='w', pady=5)
+        
+        tk.Label(timer_frame, text="Timer CD Preparato:", bg=COLORS['background']).grid(row=2, column=0, sticky='w', padx=10, pady=5)
+        self.cd_prepared_timeout_var = tk.StringVar(value=self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+        tk.Entry(timer_frame, textvariable=self.cd_prepared_timeout_var, width=10).grid(row=2, column=1, padx=10, pady=5)
+        tk.Label(timer_frame, text="min → Avvisa cameriere ritiro", bg=COLORS['background']).grid(row=2, column=2, sticky='w', pady=5)
+        
+        # Notification Settings
+        notif_frame = tk.LabelFrame(content, text="🔔 Notifiche", 
+                                    font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        notif_frame.pack(fill='x', pady=10)
+        
+        self.reminder_sound_var = tk.BooleanVar(value=self.config_manager.config.getboolean('Reminders', 'reminder_sound', fallback=True))
+        tk.Checkbutton(notif_frame, text="Suono notifica", variable=self.reminder_sound_var, bg=COLORS['background']).pack(anchor='w', padx=10, pady=5)
+        
+        self.auto_reminder_var = tk.BooleanVar(value=self.config_manager.config.getboolean('Reminders', 'auto_reminder_enabled', fallback=True))
+        tk.Checkbutton(notif_frame, text="Abilita reminder automatici", variable=self.auto_reminder_var, bg=COLORS['background']).pack(anchor='w', padx=10, pady=5)
+        
+        # Save buttons
+        btn_frame = tk.Frame(content, bg=COLORS['background'])
+        btn_frame.pack(fill='x', pady=20)
+        
+        tk.Button(btn_frame, text="💾 Salva Configurazione", bg=COLORS['accent'], fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.save_reminder_config).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="↩️ Ripristina Default", bg='#95a5a6', fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.reset_reminder_config).pack(side='left', padx=5)
+
+    def save_reminder_config(self):
+        """Save reminder configuration"""
+        if 'Reminders' not in self.config_manager.config:
+            self.config_manager.config['Reminders'] = {}
+        
+        self.config_manager.config['Reminders']['ci_timeout'] = self.ci_timeout_var.get()
+        self.config_manager.config['Reminders']['cd_timeout'] = self.cd_timeout_var.get()
+        self.config_manager.config['Reminders']['cd_prepared_timeout'] = self.cd_prepared_timeout_var.get()
+        self.config_manager.config['Reminders']['reminder_sound'] = str(self.reminder_sound_var.get())
+        self.config_manager.config['Reminders']['auto_reminder_enabled'] = str(self.auto_reminder_var.get())
+        
+        self.config_manager.save_config()
+        messagebox.showinfo("✅ Successo", "Configurazione reminder salvata")
+
+    def reset_reminder_config(self):
+        """Reset reminder config to defaults"""
+        self.ci_timeout_var.set('10')
+        self.cd_timeout_var.set('25')
+        self.cd_prepared_timeout_var.set('5')
+        self.reminder_sound_var.set(True)
+        self.auto_reminder_var.set(True)
     
     def setup_windows_control_tab(self):
         """TAB Controllo Finestre"""
