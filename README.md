@@ -1,20 +1,83 @@
-# GestOrd - Sistema di Gestione Ordini Ristorante
+# LA COMANDA v3.0 - Sistema Professionale di Gestione Ordini Ristorante
 
-Sistema completo per la gestione degli ordini di un ristorante, composto da:
-- **Launcher GUI Principale** con QR Code integrato
-- **Applicazione Web per Camerieri** (compatibile mobile)
-- **Consolle Desktop di Amministrazione** con editor menu integrato
-- **Interfaccia per la Cucina**
-- **Versione Single-File** per facilità di distribuzione
+**www.ivanlivemusic.com**
 
-## Caratteristiche
+Sistema completo professionale per la gestione degli ordini di un ristorante, composto da:
+- **Console Amministrazione** con gestione completa ordini, menu, camerieri e configurazione
+- **Applicazione Web per Camerieri** con interfaccia mobile-friendly
+- **Display Cucina** con workflow CI/CD e sistema reminder
+- **Finestra QR Code** per accesso remoto via ngrok
+- **Database Doppio** (ordini correnti + storico)
+- **Sistema Reminder Automatico** con notifiche real-time
+- **Gestione Modifiche** con workflow di approvazione
+- **Fasce Orarie Flessibili** con supporto overnight
 
-### Launcher GUI Principale (NUOVO!)
-- Interfaccia grafica unificata per avviare tutti i componenti
-- Visualizzazione QR Code in finestra separata per accesso remoto
-- Gestione centralizzata di web app, consolle admin e display cucina
-- Monitoraggio real-time dei processi attivi
-- Log attività integrato
+## 🚀 Quick Start
+
+**Leggi prima:** [QUICKSTART_V3.md](QUICKSTART_V3.md) - Guida rapida di 5 minuti
+
+```bash
+# 1. Installa dipendenze
+pip install -r requirements.txt
+
+# 2. Avvia il sistema
+python3 LAComanda.py
+
+# 3. Login con credenziali default
+# Username: cameriere
+# Password: password
+```
+
+## ✨ Caratteristiche Principali
+
+### 🔥 Novità v3.0
+
+#### 1. **Dual Database System**
+- `orders.db` - Ordini giornata corrente (alta performance)
+- `orders_history.db` - Storico completo (analytics)
+- Migrazione automatica a fine giornata
+
+#### 2. **CI/CD Order Types**
+- **CI** (Consegna Immediata): Bevande, piatti freddi
+- **CD** (Consegna Differita): Piatti da cucinare
+- Workflow separati e ottimizzati
+
+#### 3. **Flexible Business Hours**
+- Fascia singola o doppia (pranzo + cena)
+- Supporto overnight (es. 17:00→04:00)
+- Configurazione via UI
+- Timer automatico fine giornata
+
+#### 4. **Sistema Modifiche a Due Livelli**
+- **Admin**: Modifica diretta con notifiche automatiche
+- **Cameriere**: Richiesta + approvazione workflow
+- Audit trail completo
+- Notifiche real-time (Socket.IO)
+
+#### 5. **Sistema Reminder Intelligente**
+- CI: 10 min → notifica cameriere
+- CD: 25 min → colonna REMINDER cucina
+- CD preparato: 5 min → notifica ritiro
+- Icone stato: ⏱️ ⚠️ 🔥
+- Reset automatico su modifiche
+
+#### 6. **Receipt Configuration**
+- Dati azienda configurabili
+- Template personalizzabili
+- Supporto logo e QR code pagamento
+- Anteprima in tempo reale
+
+#### 7. **Order History & Analytics**
+- Tab storico con filtri avanzati
+- Export CSV/Excel
+- Ristampa scontrini
+- Delete con conferma
+
+#### 8. **Waiter Management**
+- CRUD completo camerieri
+- Password hash sicuro (SHA-256)
+- Active/Inactive toggle
+- Audit accessi
 
 ### Applicazione Web Cameriere
 - Login sicuro con username e password
@@ -321,3 +384,61 @@ MIT License
 
 Per problemi o domande, apri un issue su GitHub:
 https://github.com/ivanlivemusic/gestord/issues
+
+---
+
+## 📚 Documentazione Completa
+
+### Per Utenti
+- **[QUICKSTART_V3.md](QUICKSTART_V3.md)** - Guida rapida di 5 minuti per iniziare
+- **[README_LaComanda.md](README_LaComanda.md)** - Manuale utente completo
+- **[GUIDA_USO.md](GUIDA_USO.md)** - Guida all'uso operativo
+
+### Per Sviluppatori
+- **[IMPLEMENTATION_FINAL.md](IMPLEMENTATION_FINAL.md)** - Riferimento tecnico completo (21KB)
+- **[README_IMPLEMENTATION_V3.md](README_IMPLEMENTATION_V3.md)** - Panoramica implementazione
+- **[IMPLEMENTATION_COMPLETE_FINAL.md](IMPLEMENTATION_COMPLETE_FINAL.md)** - Riepilogo finale
+
+### Per Security Team
+- **[SECURITY_FINAL.md](SECURITY_FINAL.md)** - Analisi sicurezza completa (12KB)
+
+---
+
+## 🎯 Workflow Operativo
+
+### Cameriere (Web)
+1. Login: `/lacomanda/login`
+2. Prendi ordine: seleziona piatti, tavolo, numero persone
+3. Conferma ordine → VA in database + notifica cucina (se CD)
+4. Monitora stato: inserito → preparato → in_consegna → consegnato
+5. Richiedi modifica (se necessario) → attendi approvazione admin
+
+### Cucina (Display)
+1. Vedi ordini CD in colonna INSERITO
+2. Inizi preparazione → sposta in PREPARATO
+3. Finisci → IN_CONSEGNA (notifica cameriere)
+4. Se passa tempo → ordine in colonna 🔥 REMINDER
+
+### Admin (Console)
+1. Monitora tutti gli ordini in tempo reale
+2. Approva/rifiuta richieste modifica camerieri
+3. Modifica ordini direttamente (notifiche automatiche)
+4. Gestisci camerieri, menu, configurazione
+5. Vedi storico, export dati, ristampa scontrini
+6. Marca consegnato → pagato (unico con permesso)
+
+---
+
+## 🔄 Stati Ordine
+
+| Stato | Descrizione | Colore | Chi cambia |
+|-------|-------------|--------|------------|
+| `inserito` | Ordine ricevuto | 🟡 Giallo | Auto |
+| `preparato` | Cucina finito | 🔵 Blu | Cucina |
+| `in_consegna` | In consegna | 🟣 Viola | Cameriere |
+| `consegnato` | Consegnato | 🟢 Verde | Cameriere |
+| `pagato` | Pagato | 🟢 Verde Scuro | Solo Admin |
+
+---
+
+**LA COMANDA v3.0** - www.ivanlivemusic.com
