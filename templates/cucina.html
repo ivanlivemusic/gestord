@@ -350,17 +350,12 @@
             const actions = document.createElement('div');
             actions.className = 'action-buttons';
             
+            // ONLY show "Preparato" button - no "In Delivery" button
             if (order.status === 'inserito' || order.isReminder) {
                 const btn = document.createElement('button');
                 btn.className = 'action-btn btn-preparato';
                 btn.textContent = '✅ Segna Preparato';
                 btn.onclick = () => updateOrderStatus(order.id, 'preparato');
-                actions.appendChild(btn);
-            } else if (order.status === 'preparato') {
-                const btn = document.createElement('button');
-                btn.className = 'action-btn btn-consegna';
-                btn.textContent = '🚚 In Consegna';
-                btn.onclick = () => updateOrderStatus(order.id, 'in_consegna');
                 actions.appendChild(btn);
             }
 

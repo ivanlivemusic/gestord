@@ -2145,6 +2145,10 @@ class AdminConsole:
         self.window.after(1000, auto_refresh)
     def setup_ui(self):
         """Setup UI completa"""
+        # Configure ttk Style for taller rows
+        style = ttk.Style()
+        style.configure("Treeview", rowheight=60)
+        
         # Notebook per tabs
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill='both', expand=True)
@@ -5058,24 +5062,12 @@ class KitchenDisplay:
         
         state = order['status']
         
-        if column == 'inserito':
-            tk.Button(btn_frame, text="✅ Preparato", bg=COLORS['accent'], fg='white',
+        # ONLY show "Preparato" button - no "In Delivery" button
+        if column == 'inserito' or (column == 'reminder' and state == 'inserito'):
+            bg_color = '#FF4500' if column == 'reminder' else COLORS['accent']
+            tk.Button(btn_frame, text="✅ Segna Preparato", bg=bg_color, fg='white',
                      font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
                      command=lambda: self.change_status(order['id'], 'preparato')).pack()
-        elif column == 'preparato':
-            tk.Button(btn_frame, text="🚚 Pronto", bg=COLORS['accent'], fg='white',
-                     font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                     command=lambda: self.change_status(order['id'], 'in_consegna')).pack()
-        elif column == 'reminder':
-            # Mostra azioni basate sullo stato reale
-            if state == 'inserito':
-                tk.Button(btn_frame, text="✅ Preparato", bg='#FF4500', fg='white',
-                         font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                         command=lambda: self.change_status(order['id'], 'preparato')).pack()
-            elif state == 'preparato':
-                tk.Button(btn_frame, text="🚚 Pronto", bg='#FF4500', fg='white',
-                         font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                         command=lambda: self.change_status(order['id'], 'in_consegna')).pack()
 
     
     def change_status(self, order_id, new_status):
