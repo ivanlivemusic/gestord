@@ -5349,7 +5349,7 @@ class LaComanda:
             return None
     
     def start_ngrok(self):
-        """Avvia ngrok tunnel per accesso remoto"""
+        """Avvia ngrok tunnel per accesso remoto con gestione tunnel esistenti"""
         token = self.setup_ngrok()
         
         if not token:
@@ -5358,12 +5358,50 @@ class LaComanda:
             return f"http://localhost:{PORT}"
         
         try:
+            # Chiudi tunnel esistenti
+            try:
+                existing_tunnels = ngrok.get_tunnels()
+                for tunnel in existing_tunnels:
+                    logger.info(f"Chiusura tunnel esistente: {tunnel.public_url}")
+                    ngrok.disconnect(tunnel.public_url)
+                    time.sleep(1)
+            except Exception as e:
+                logger.debug(f"Nessun tunnel da chiudere: {e}")
+            
+            # Avvia nuovo tunnel
+            logger.info("Avvio tunnel ngrok...")
             public_url = ngrok.connect(PORT, bind_tls=True)
-            logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
+            logger.info(f"✅ Tunnel attivo: {public_url.public_url}")
             return public_url.public_url
+            
         except Exception as e:
-            logger.warning(f"Errore ngrok: {e}. Il sistema funzionerà solo in localhost.")
-            return f"http://localhost:{PORT}"
+            logger.error(f"❌ Errore ngrok: {e}")
+            
+            # Fallback: termina processi ngrok esistenti e riprova
+            try:
+                if platform.system() == 'Windows':
+                    subprocess.run(['taskkill', '/F', '/IM', 'ngrok.exe'], 
+                                  capture_output=True, check=False)
+                else:
+                    # Find and kill ngrok processes by PID
+                    result = subprocess.run(['pgrep', 'ngrok'], 
+                                          capture_output=True, text=True, check=False)
+                    if result.stdout.strip():
+                        pids = result.stdout.strip().split('\n')
+                        for pid in pids:
+                            try:
+                                subprocess.run(['kill', pid], capture_output=True, check=False)
+                                logger.info(f"Terminato processo ngrok PID {pid}")
+                            except Exception as kill_e:
+                                logger.debug(f"Errore terminazione PID {pid}: {kill_e}")
+                
+                time.sleep(2)
+                public_url = ngrok.connect(PORT, bind_tls=True)
+                logger.info(f"✅ Tunnel attivo (dopo cleanup): {public_url.public_url}")
+                return public_url.public_url
+            except Exception as cleanup_e:
+                logger.warning(f"Impossibile avviare tunnel ngrok: {cleanup_e}. Il sistema funzionerà solo in localhost.")
+                return f"http://localhost:{PORT}"
     
     def run(self):
         """Avvia main loop"""
