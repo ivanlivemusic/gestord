@@ -552,18 +552,30 @@ class Database:
         conn.commit()
         conn.close()
     
-    def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes=""):
-        """Crea nuovo ordine con gestione errori"""
+    def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes="", order_type="normal"):
+        """Crea nuovo ordine con gestione errori e supporto per order_type (normal/rapid/takeaway)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
             timestamp = datetime.now().isoformat()
             
+            # Generate pickup_number for rapid/takeaway orders
+            pickup_number = None
+            if order_type in ['rapid', 'takeaway']:
+                # Get max pickup_number for today
+                today = datetime.now().date().isoformat()
+                cursor.execute(
+                    "SELECT MAX(pickup_number) FROM orders WHERE date(timestamp) = date(?) AND order_type IN ('rapid', 'takeaway')",
+                    (timestamp,)
+                )
+                max_pickup = cursor.fetchone()[0]
+                pickup_number = (max_pickup or 0) + 1
+            
             cursor.execute(
-                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'inserito')""",
-                (table_number, num_people, waiter_id, waiter_name, timestamp, notes)
+                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status, order_type, pickup_number)
+                   VALUES (?, ?, ?, ?, ?, ?, 'inserito', ?, ?)""",
+                (table_number, num_people, waiter_id, waiter_name, timestamp, notes, order_type, pickup_number)
             )
             
             order_id = cursor.lastrowid
@@ -577,7 +589,7 @@ class Database:
                 )
             
             conn.commit()
-            logger.info(f"Ordine {order_id} creato nel database")
+            logger.info(f"Ordine {order_id} creato nel database - Tipo: {order_type}, Pickup: {pickup_number}")
             return order_id
             
         except sqlite3.Error as e:
@@ -655,6 +667,10 @@ class Database:
         
         conn.close()
         return order_dict
+    
+    def get_order(self, order_id):
+        """Alias per get_order_by_id"""
+        return self.get_order_by_id(order_id)
     
     def update_order_status(self, order_id, status):
         """Aggiorna stato ordine"""
@@ -772,19 +788,35 @@ class Database:
             conn.close()
     
     def verify_waiter(self, username, password):
-        """Verifica credenziali cameriere"""
+        """Verifica credenziali cameriere con werkzeug password hashing"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        pwd_hash = self.hash_password(password)
         cursor.execute(
-            "SELECT id, username, full_name, active FROM waiters WHERE username = ? AND password = ? AND active = 1",
-            (username, pwd_hash)
+            "SELECT id, username, full_name, active, password FROM waiters WHERE username = ? AND active = 1",
+            (username,)
         )
         waiter = cursor.fetchone()
         conn.close()
+        
         if waiter:
-            logger.info(f"Authentication successful using waiters table: {username}")
-            return dict(waiter)
+            waiter_dict = dict(waiter)
+            stored_password = waiter_dict['password']
+            
+            # Try werkzeug check_password_hash first (new format)
+            if stored_password.startswith('pbkdf2:') or stored_password.startswith('scrypt:'):
+                if check_password_hash(stored_password, password):
+                    logger.info(f"Authentication successful using werkzeug hash: {username}")
+                    del waiter_dict['password']  # Remove password from return dict
+                    return waiter_dict
+            # Fallback to SHA256 for backward compatibility
+            elif stored_password == self.hash_password(password):
+                logger.warning(f"Authentication successful using legacy SHA256 hash: {username} - Consider migrating to werkzeug")
+                del waiter_dict['password']
+                return waiter_dict
+            
+            logger.warning(f"Password verification failed for waiter: {username}")
+            return None
+        
         # Fallback su users per compatibilità (DEPRECATED)
         logger.warning(f"Falling back to users table for: {username} - Consider migrating to waiters table")
         return self.verify_user(username, password)
@@ -1152,9 +1184,12 @@ class WebApp:
                 user = self.database.verify_waiter(username, password)
                 
                 if user:
+                    session['waiter_id'] = user['id']
+                    session['waiter_user'] = user['username']
+                    session['full_name'] = user['full_name']
+                    # Keep backward compatibility
                     session['user_id'] = user['id']
                     session['username'] = user['username']
-                    session['full_name'] = user['full_name']
                     return redirect(url_for('cameriere'))
                 else:
                     return render_template('login.html', error='Credenziali non valide')
@@ -1220,7 +1255,8 @@ class WebApp:
         
         @self.app.route('/lacomanda/api/orders', methods=['POST'])
         def create_order():
-            if 'user_id' not in session:
+            # Check session for waiter authentication
+            if 'user_id' not in session and 'waiter_id' not in session:
                 logger.warning("Tentativo di creare ordine senza autenticazione")
                 return jsonify({'success': False, 'error': 'Non autenticato'}), 401
             
@@ -1237,11 +1273,21 @@ class WebApp:
                 num_people = data.get('num_people')
                 items = data.get('items', [])
                 notes = data.get('notes', '')
+                order_type = data.get('order_type', 'normal')  # normal, rapid, takeaway
                 
-                # Verifica campi obbligatori
-                if not table_number:
-                    logger.error("Numero tavolo mancante")
-                    return jsonify({'success': False, 'error': 'Numero tavolo mancante'}), 400
+                # Validate order_type
+                if order_type not in ['normal', 'rapid', 'takeaway']:
+                    logger.error(f"Tipo ordine non valido: {order_type}")
+                    return jsonify({'success': False, 'error': 'Tipo ordine non valido'}), 400
+                
+                # Validate table is required only for normal orders
+                if order_type == 'normal' and not table_number:
+                    logger.error("Numero tavolo mancante per ordine normale")
+                    return jsonify({'success': False, 'error': 'Numero tavolo richiesto per ordini normali'}), 400
+                
+                # For rapid/takeaway orders, table_number can be auto-generated or optional
+                if order_type in ['rapid', 'takeaway'] and not table_number:
+                    table_number = 0  # Use 0 for rapid/takeaway without table
                 
                 if not num_people:
                     logger.error("Numero persone mancante")
@@ -1251,27 +1297,43 @@ class WebApp:
                     logger.error("Nessun item nell'ordine")
                     return jsonify({'success': False, 'error': 'Ordine vuoto'}), 400
                 
-                # Crea ordine
+                # Get waiter info from session
+                waiter_id = session.get('waiter_id', session.get('user_id'))
+                waiter_name = session.get('full_name', 'Unknown')
+                
+                # Create order with order_type
                 order_id = self.database.create_order(
                     table_number,
                     num_people,
-                    session['user_id'],
-                    session['full_name'],
+                    waiter_id,
+                    waiter_name,
                     items,
-                    notes
+                    notes,
+                    order_type=order_type
                 )
                 
-                logger.info(f"Ordine creato con successo: ID={order_id}, Tavolo={table_number}, Cameriere={session['full_name']}")
+                logger.info(f"Ordine creato con successo: ID={order_id}, Tipo={order_type}, Tavolo={table_number}, Cameriere={waiter_name}")
                 
                 # Notifica via socketio
                 try:
-                    self.socketio.emit('new_order', {'order_id': order_id}, namespace='/')
+                    self.socketio.emit('new_order', {'order_id': order_id, 'order_type': order_type}, namespace='/')
                     logger.debug(f"Notifica SocketIO inviata per ordine {order_id}")
                 except Exception as socket_error:
                     logger.error(f"Errore invio notifica SocketIO: {socket_error}")
                     # Non fallire l'ordine se la notifica fallisce
                 
-                return jsonify({'success': True, 'order_id': order_id})
+                # Get pickup_number for rapid/takeaway orders
+                pickup_number = None
+                if order_type in ['rapid', 'takeaway']:
+                    order_info = self.database.get_order(order_id)
+                    pickup_number = order_info.get('pickup_number') if order_info else None
+                
+                return jsonify({
+                    'success': True, 
+                    'order_id': order_id,
+                    'order_type': order_type,
+                    'pickup_number': pickup_number
+                })
                 
             except KeyError as ke:
                 logger.error(f"Campo mancante nei dati ordine: {ke}")
@@ -1422,6 +1484,13 @@ class ConfigManager:
         }
         self.config['Ngrok'] = {
             'authtoken': ''
+        }
+        self.config['Reminders'] = {
+            'ci_timeout': '10',
+            'cd_timeout': '25',
+            'cd_prepared_timeout': '5',
+            'reminder_sound': 'true',
+            'auto_reminder_enabled': 'true'
         }
         self.save_config()
     
@@ -1792,6 +1861,10 @@ class AdminConsole:
         self.socketio = socketio
         self.config_manager = config_manager
         
+        # QR window state tracking
+        self.qr_cameriere_window = None
+        self.qr_cucina_window = None
+        
         self.window = tk.Toplevel(parent)
         self.window.title("LA COMANDA - Console Amministrazione | www.ivanlivemusic.com")
         
@@ -1833,9 +1906,6 @@ class AdminConsole:
         
         # TAB 7: ORARI E CONFIGURAZIONE
         self.setup_config_tab()
-        
-        # TAB 8: CONTROLLI FINESTRE
-        self.setup_windows_control_tab()
     
     def setup_orders_tab(self):
         """TAB Gestione Ordini"""
@@ -1876,6 +1946,12 @@ class AdminConsole:
         
         tk.Button(toolbar, text="💾 Backup Ora", bg=COLORS['primary'], fg='white',
                  command=self.backup_now, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="📱 QR Cameriere", bg='#4A90E2', fg='white',
+                 command=self.toggle_qr_cameriere, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="🍳 QR Cucina", bg='#FF6B35', fg='white',
+                 command=self.toggle_qr_cucina, **btn_style).pack(side='left', padx=5)
         
         # Legenda stati
         legend_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -1934,6 +2010,9 @@ class AdminConsole:
         self.orders_tree.tag_configure('preparato', background=COLORS['state_preparato'])
         self.orders_tree.tag_configure('in_consegna', background=COLORS['state_in_consegna'])
         self.orders_tree.tag_configure('pagato', background=COLORS['state_pagato'])
+        # Order type colors
+        self.orders_tree.tag_configure('rapid', background='#E3F2FD')
+        self.orders_tree.tag_configure('takeaway', background='#FFF3E0')
         
         # Frame cambio stato
         status_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2086,7 +2165,7 @@ class AdminConsole:
         self.refresh_daily_menu()
     
     def refresh_orders(self):
-        """Aggiorna lista ordini"""
+        """Aggiorna lista ordini con supporto order_type e pickup_number"""
         # Pulisci tree
         for item in self.orders_tree.get_children():
             self.orders_tree.delete(item)
@@ -2121,13 +2200,30 @@ class AdminConsole:
             except:
                 time_str = order['timestamp'][:5] if len(order['timestamp']) > 5 else order['timestamp']
             
-            # Inserisci riga
-            tag = order['status']
-            if tag not in ['inserito', 'preparato', 'in_consegna', 'pagato']:
-                tag = 'even' if idx % 2 == 0 else 'odd'
+            # Determine tag based on order_type and status
+            order_type = order.get('order_type', 'normal')
+            pickup_number = order.get('pickup_number')
+            
+            # Add icon prefix for rapid/takeaway orders
+            table_display = str(order['table_number'])
+            if order_type == 'rapid':
+                table_display = f"🚀 {pickup_number or table_display}"
+            elif order_type == 'takeaway':
+                table_display = f"📦 {pickup_number or table_display}"
+            
+            # Determine tag: order_type takes precedence over status for coloring
+            if order_type == 'rapid':
+                tag = 'rapid'
+            elif order_type == 'takeaway':
+                tag = 'takeaway'
+            else:
+                # Use status-based coloring for normal orders
+                tag = order['status']
+                if tag not in ['inserito', 'preparato', 'in_consegna', 'pagato']:
+                    tag = 'even' if idx % 2 == 0 else 'odd'
             
             self.orders_tree.insert('', 'end', iid=order['id'],
-                                   values=(order['id'], order['table_number'], order['num_people'],
+                                   values=(order['id'], table_display, order['num_people'],
                                           order['waiter_name'], order['status'].replace('_', ' ').title(),
                                           time_str, dishes[:40] + '...' if len(dishes) > 40 else dishes,
                                           prices[:30] + '...' if len(prices) > 30 else prices,
@@ -3040,15 +3136,135 @@ DETTAGLIO ORDINE
     
     def add_kitchen_user(self):
         """Aggiungi nuovo utente cucina"""
-        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+        dialog = tk.Toplevel(self.window)
+        dialog.title("Aggiungi Utente Cucina")
+        dialog.geometry("400x300")
+        dialog.configure(bg=COLORS['background'])
+        
+        tk.Label(dialog, text="➕ Aggiungi Utente Cucina", font=('Arial', 16, 'bold'),
+                bg=COLORS['background']).pack(pady=20)
+        
+        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame.pack(padx=30, pady=10, fill='both', expand=True)
+        
+        fields = {}
+        labels = ['Username', 'Password', 'Nome Completo']
+        
+        for label in labels:
+            tk.Label(frame, text=f"{label}:", font=('Arial', 11),
+                    bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
+            if label == 'Password':
+                entry = tk.Entry(frame, font=('Arial', 11), width=30, show='*')
+            else:
+                entry = tk.Entry(frame, font=('Arial', 11), width=30)
+            entry.pack(fill='x', pady=5)
+            fields[label] = entry
+        
+        def save():
+            username = fields['Username'].get().strip()
+            password = fields['Password'].get()
+            full_name = fields['Nome Completo'].get().strip()
+            
+            if not username or not password or not full_name:
+                messagebox.showwarning("Attenzione", "Compila tutti i campi")
+                return
+            
+            try:
+                if self.database.add_kitchen_user(username, password, full_name):
+                    messagebox.showinfo("✅ Successo", "Utente cucina aggiunto")
+                    dialog.destroy()
+                    self.refresh_kitchen_users()
+                else:
+                    messagebox.showerror("Errore", "Username già esistente")
+            except Exception as e:
+                messagebox.showerror("Errore", f"Errore durante l'aggiunta: {str(e)}")
+        
+        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+                 font=('Arial', 11, 'bold'), command=save, relief='flat',
+                 padx=20, pady=8).pack(pady=20)
     
     def edit_kitchen_user(self):
         """Modifica utente cucina"""
-        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+        selection = self.kitchen_users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Attenzione", "Seleziona un utente")
+            return
+        
+        user_id = int(selection[0])
+        values = self.kitchen_users_tree.item(user_id)['values']
+        
+        dialog = tk.Toplevel(self.window)
+        dialog.title("Modifica Utente Cucina")
+        dialog.geometry("400x320")
+        dialog.configure(bg=COLORS['background'])
+        
+        tk.Label(dialog, text="✏️ Modifica Utente Cucina", font=('Arial', 16, 'bold'),
+                bg=COLORS['background']).pack(pady=20)
+        
+        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame.pack(padx=30, pady=10, fill='both', expand=True)
+        
+        # Nome Completo
+        tk.Label(frame, text="Nome Completo:", font=('Arial', 11),
+                bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
+        full_name_entry = tk.Entry(frame, font=('Arial', 11), width=30)
+        full_name_entry.pack(fill='x', pady=5)
+        full_name_entry.insert(0, values[2])
+        
+        # Attivo
+        active_var = tk.BooleanVar(value=(values[3] == '✅'))
+        tk.Checkbutton(frame, text="Utente Attivo", variable=active_var,
+                      font=('Arial', 11), bg=COLORS['background']).pack(anchor='w', pady=10)
+        
+        # Nuova Password (opzionale)
+        tk.Label(frame, text="Nuova Password (lascia vuoto per non modificare):", 
+                font=('Arial', 11), bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
+        password_entry = tk.Entry(frame, font=('Arial', 11), width=30, show='*')
+        password_entry.pack(fill='x', pady=5)
+        
+        def save():
+            full_name = full_name_entry.get().strip()
+            active = 1 if active_var.get() else 0
+            new_password = password_entry.get()
+            
+            if not full_name:
+                messagebox.showwarning("Attenzione", "Nome completo è richiesto")
+                return
+            
+            try:
+                self.database.update_kitchen_user(user_id, full_name, active)
+                if new_password:
+                    self.database.change_kitchen_user_password(user_id, new_password)
+                messagebox.showinfo("✅ Successo", "Utente cucina modificato")
+                dialog.destroy()
+                self.refresh_kitchen_users()
+            except Exception as e:
+                messagebox.showerror("Errore", f"Errore durante la modifica: {str(e)}")
+        
+        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+                 font=('Arial', 11, 'bold'), command=save, relief='flat',
+                 padx=20, pady=8).pack(pady=20)
     
     def delete_kitchen_user(self):
         """Elimina utente cucina"""
-        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+        selection = self.kitchen_users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Attenzione", "Seleziona un utente")
+            return
+        
+        user_id = int(selection[0])
+        values = self.kitchen_users_tree.item(user_id)['values']
+        username = values[1]
+        
+        result = messagebox.askyesno("Conferma", 
+                                    f"Eliminare l'utente '{username}'?\n\nQuesta azione è irreversibile.")
+        if result:
+            try:
+                self.database.delete_kitchen_user(user_id)
+                messagebox.showinfo("✅ Successo", "Utente cucina eliminato")
+                self.refresh_kitchen_users()
+            except Exception as e:
+                messagebox.showerror("Errore", f"Errore durante l'eliminazione: {str(e)}")
     
     def setup_config_tab(self):
         """TAB Configurazione"""
@@ -3365,6 +3581,122 @@ DETTAGLIO ORDINE
             logger.error(f"Error creating backup: {e}")
             messagebox.showerror("❌ Errore", f"Errore durante il backup:\n{str(e)}")
     
+    def toggle_qr_cameriere(self):
+        """Toggle QR Cameriere window"""
+        if self.qr_cameriere_window and self.qr_cameriere_window.winfo_exists():
+            self.qr_cameriere_window.destroy()
+            self.qr_cameriere_window = None
+        else:
+            self.show_qr_cameriere()
+    
+    def toggle_qr_cucina(self):
+        """Toggle QR Cucina window"""
+        if self.qr_cucina_window and self.qr_cucina_window.winfo_exists():
+            self.qr_cucina_window.destroy()
+            self.qr_cucina_window = None
+        else:
+            self.show_qr_cucina()
+    
+    def show_qr_cameriere(self):
+        """Show QR code window for Cameriere"""
+        # Get ngrok URL from parent
+        ngrok_url = getattr(self.parent, 'ngrok_url', 'http://localhost:5000')
+        if hasattr(self.parent, 'master'):
+            ngrok_url = getattr(self.parent.master, 'ngrok_url', ngrok_url)
+        
+        url = f"{ngrok_url}/lacomanda/cameriere"
+        
+        self.qr_cameriere_window = tk.Toplevel(self.window)
+        self.qr_cameriere_window.title("QR Code - Cameriere")
+        self.qr_cameriere_window.geometry("400x500")
+        self.qr_cameriere_window.configure(bg='#4A90E2')
+        
+        # Title
+        tk.Label(self.qr_cameriere_window, text="📱 QR Code Cameriere", 
+                font=('Arial', 16, 'bold'), bg='#4A90E2', fg='white').pack(pady=20)
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr_image = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to PhotoImage
+        qr_photo = ImageTk.PhotoImage(qr_image)
+        qr_label = tk.Label(self.qr_cameriere_window, image=qr_photo, bg='white')
+        qr_label.image = qr_photo  # Keep reference
+        qr_label.pack(pady=10)
+        
+        # URL text
+        url_frame = tk.Frame(self.qr_cameriere_window, bg='#4A90E2')
+        url_frame.pack(pady=10, padx=20, fill='x')
+        tk.Label(url_frame, text="URL:", font=('Arial', 10, 'bold'), 
+                bg='#4A90E2', fg='white').pack(anchor='w')
+        url_entry = tk.Entry(url_frame, font=('Arial', 10), width=40)
+        url_entry.insert(0, url)
+        url_entry.config(state='readonly')
+        url_entry.pack(fill='x', pady=5)
+        
+        # Copy button
+        def copy_url():
+            self.qr_cameriere_window.clipboard_clear()
+            self.qr_cameriere_window.clipboard_append(url)
+            messagebox.showinfo("✅", "URL copiato negli appunti")
+        
+        tk.Button(self.qr_cameriere_window, text="📋 Copia URL", 
+                 command=copy_url, bg='white', fg='#4A90E2',
+                 font=('Arial', 11, 'bold'), padx=20, pady=5).pack(pady=10)
+    
+    def show_qr_cucina(self):
+        """Show QR code window for Cucina"""
+        # Get ngrok URL from parent
+        ngrok_url = getattr(self.parent, 'ngrok_url', 'http://localhost:5000')
+        if hasattr(self.parent, 'master'):
+            ngrok_url = getattr(self.parent.master, 'ngrok_url', ngrok_url)
+        
+        url = f"{ngrok_url}/lacomanda/cucina"
+        
+        self.qr_cucina_window = tk.Toplevel(self.window)
+        self.qr_cucina_window.title("QR Code - Cucina")
+        self.qr_cucina_window.geometry("400x500")
+        self.qr_cucina_window.configure(bg='#FF6B35')
+        
+        # Title
+        tk.Label(self.qr_cucina_window, text="🍳 QR Code Cucina", 
+                font=('Arial', 16, 'bold'), bg='#FF6B35', fg='white').pack(pady=20)
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr_image = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to PhotoImage
+        qr_photo = ImageTk.PhotoImage(qr_image)
+        qr_label = tk.Label(self.qr_cucina_window, image=qr_photo, bg='white')
+        qr_label.image = qr_photo  # Keep reference
+        qr_label.pack(pady=10)
+        
+        # URL text
+        url_frame = tk.Frame(self.qr_cucina_window, bg='#FF6B35')
+        url_frame.pack(pady=10, padx=20, fill='x')
+        tk.Label(url_frame, text="URL:", font=('Arial', 10, 'bold'), 
+                bg='#FF6B35', fg='white').pack(anchor='w')
+        url_entry = tk.Entry(url_frame, font=('Arial', 10), width=40)
+        url_entry.insert(0, url)
+        url_entry.config(state='readonly')
+        url_entry.pack(fill='x', pady=5)
+        
+        # Copy button
+        def copy_url():
+            self.qr_cucina_window.clipboard_clear()
+            self.qr_cucina_window.clipboard_append(url)
+            messagebox.showinfo("✅", "URL copiato negli appunti")
+        
+        tk.Button(self.qr_cucina_window, text="📋 Copia URL", 
+                 command=copy_url, bg='white', fg='#FF6B35',
+                 font=('Arial', 11, 'bold'), padx=20, pady=5).pack(pady=10)
+    
     def print_receipt(self, receipt_text):
         """Print receipt function"""
         temp_file = None
@@ -3581,16 +3913,40 @@ class KitchenDisplay:
             except:
                 elapsed_minutes = 0
             
-            # Determina icona reminder
+            # Determina icona reminder usando config values
             reminder_icon = ''
-            if tipo == 'CD' and state == 'inserito' and elapsed_minutes >= 25:
-                reminder_icon = REMINDER_ICONS['urgent']
-            elif tipo == 'CD' and state == 'inserito' and elapsed_minutes >= 20:
-                reminder_icon = REMINDER_ICONS['warning']
-            elif tipo == 'CD' and state == 'preparato' and elapsed_minutes >= 5:
-                reminder_icon = REMINDER_ICONS['warning']
-            elif tipo == 'CI' and elapsed_minutes >= 10:
-                reminder_icon = REMINDER_ICONS['warning']
+            
+            # Get timeout values from config
+            try:
+                ci_timeout = int(self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
+                cd_timeout = int(self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
+                cd_prepared_timeout = int(self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+            except:
+                ci_timeout = 10
+                cd_timeout = 25
+                cd_prepared_timeout = 5
+            
+            # Calculate warning thresholds (80% of timeout)
+            cd_warning = cd_timeout * 0.8
+            ci_warning = ci_timeout * 0.8
+            
+            if tipo == 'CD' and state == 'inserito':
+                if elapsed_minutes >= cd_timeout:
+                    reminder_icon = REMINDER_ICONS['urgent']
+                elif elapsed_minutes >= cd_warning:
+                    reminder_icon = REMINDER_ICONS['warning']
+                else:
+                    reminder_icon = REMINDER_ICONS['normal']
+            elif tipo == 'CD' and state == 'preparato':
+                if elapsed_minutes >= cd_prepared_timeout:
+                    reminder_icon = REMINDER_ICONS['warning']
+                else:
+                    reminder_icon = REMINDER_ICONS['normal']
+            elif tipo == 'CI':
+                if elapsed_minutes >= ci_timeout:
+                    reminder_icon = REMINDER_ICONS['warning']
+                else:
+                    reminder_icon = REMINDER_ICONS['normal']
             
             # Posizionamento ordini
             target_column = None
@@ -3829,7 +4185,25 @@ class LaComanda:
             time.sleep(60)
     
     def check_reminders(self):
-        """Controlla e invia reminder per ordini"""
+        """Controlla e invia reminder per ordini usando valori configurati"""
+        # Check if reminders are enabled
+        try:
+            auto_enabled = self.config_manager.config.getboolean('Reminders', 'auto_reminder_enabled', fallback=True)
+            if not auto_enabled:
+                return
+        except:
+            pass
+        
+        # Get timeout values from config
+        try:
+            ci_timeout = int(self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
+            cd_timeout = int(self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
+            cd_prepared_timeout = int(self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+        except:
+            ci_timeout = 10
+            cd_timeout = 25
+            cd_prepared_timeout = 5
+        
         orders = self.database.get_all_orders()
         now = datetime.now()
         
@@ -3841,17 +4215,17 @@ class LaComanda:
                 # Determina tipo ordine (CI/CD)
                 tipo = order.get('tipo_consegna', 'CD')
                 
-                # CI: 10 min reminder
-                if tipo == 'CI' and elapsed_minutes >= 10 and not order.get('reminder_sent'):
+                # CI: configurable timeout reminder
+                if tipo == 'CI' and elapsed_minutes >= ci_timeout and not order.get('reminder_sent'):
                     self.send_reminder_notification(order, 'CI')
                 
-                # CD preparato: 5 min reminder
-                elif tipo == 'CD' and order['status'] == 'preparato' and elapsed_minutes >= 5:
+                # CD preparato: configurable timeout reminder
+                elif tipo == 'CD' and order['status'] == 'preparato' and elapsed_minutes >= cd_prepared_timeout:
                     if not order.get('reminder_sent'):
                         self.send_reminder_notification(order, 'CD_READY')
                 
-                # CD in cucina: 25 min reminder
-                elif tipo == 'CD' and order['status'] == 'inserito' and elapsed_minutes >= 25:
+                # CD in cucina: configurable timeout reminder
+                elif tipo == 'CD' and order['status'] == 'inserito' and elapsed_minutes >= cd_timeout:
                     if not order.get('reminder_sent'):
                         self.send_reminder_notification(order, 'CD_KITCHEN')
                 
