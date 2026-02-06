@@ -1813,10 +1813,13 @@ class AdminConsole:
         # TAB 5: GESTIONE CAMERIERI
         self.setup_waiters_tab()
         
-        # TAB 6: ORARI E CONFIGURAZIONE
+        # TAB 6: UTENTI CUCINA
+        self.setup_kitchen_users_tab()
+        
+        # TAB 7: ORARI E CONFIGURAZIONE
         self.setup_config_tab()
         
-        # TAB 7: CONTROLLI FINESTRE
+        # TAB 8: CONTROLLI FINESTRE
         self.setup_windows_control_tab()
     
     def setup_orders_tab(self):
@@ -1855,6 +1858,9 @@ class AdminConsole:
         
         tk.Button(toolbar, text="🗑️ Elimina Ordine", bg=COLORS['state_inserito'], fg='white',
                  command=self.delete_order, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="💾 Backup Ora", bg=COLORS['primary'], fg='white',
+                 command=self.backup_now, **btn_style).pack(side='left', padx=5)
         
         # Legenda stati
         legend_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2677,6 +2683,12 @@ DETTAGLIO ORDINE
                  command=self.view_history_details).pack(side='left', padx=5)
         tk.Button(btn_frame, text="🖨️ Ristampa", bg=COLORS['secondary'], fg='white',
                  command=self.reprint_receipt).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="📂 Apri Storico", bg=COLORS['accent'], fg='white',
+                 command=self.open_historic_database).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="♻️ Storicizza", bg=COLORS['secondary'], fg='white',
+                 command=self.storicizza_ordini).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="📊 Statistiche", bg=COLORS['primary'], fg='white',
+                 command=self.show_statistics).pack(side='left', padx=5)
     
     def search_history(self):
         """Cerca ordini storici"""
@@ -2722,6 +2734,26 @@ DETTAGLIO ORDINE
             messagebox.showwarning("Attenzione", "Seleziona un ordine")
             return
         messagebox.showinfo("Info", "Funzionalità da implementare")
+    
+    def open_historic_database(self):
+        """Apri database storico"""
+        filename = filedialog.askopenfilename(
+            title="Seleziona Database Storico",
+            filetypes=[("Database files", "*.db"), ("All files", "*.*")]
+        )
+        if filename:
+            # TODO: Aprire StoricOrdersWindow con il database selezionato
+            messagebox.showinfo("Info", f"Database selezionato: {filename}\n\nFunzionalità StoricOrdersWindow in sviluppo")
+    
+    def storicizza_ordini(self):
+        """Storicizza ordini"""
+        if messagebox.askyesno("Conferma", "Storicizzare gli ordini completati?"):
+            # TODO: Implementare logica di storicizzazione
+            messagebox.showinfo("Info", "Funzionalità di storicizzazione in sviluppo")
+    
+    def show_statistics(self):
+        """Mostra statistiche"""
+        messagebox.showinfo("📊 Statistiche", "Coming soon - Funzionalità in sviluppo")
     
     def setup_waiters_tab(self):
         """TAB Gestione Camerieri"""
@@ -2933,6 +2965,78 @@ DETTAGLIO ORDINE
             self.database.delete_waiter(waiter_id)
             messagebox.showinfo("✅ Successo", "Cameriere eliminato")
             self.refresh_waiters()
+    
+    def setup_kitchen_users_tab(self):
+        """TAB Utenti Cucina"""
+        kitchen_frame = tk.Frame(self.notebook, bg=COLORS['background'])
+        self.notebook.add(kitchen_frame, text="👨‍🍳 Utenti Cucina")
+        
+        # Header
+        header = tk.Frame(kitchen_frame, bg=COLORS['primary'], height=60)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="👨‍🍳 Gestione Utenti Cucina", font=('Arial', 18, 'bold'),
+                bg=COLORS['primary'], fg='white').pack(side='left', padx=20, pady=15)
+        
+        # Treeview
+        tree_frame = tk.Frame(kitchen_frame, bg='white')
+        tree_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.pack(side='right', fill='y')
+        
+        self.kitchen_users_tree = ttk.Treeview(tree_frame, columns=('ID', 'Username', 'Nome Completo', 'Attivo'),
+                                        show='headings', yscrollcommand=scrollbar.set, height=15)
+        scrollbar.config(command=self.kitchen_users_tree.yview)
+        
+        self.kitchen_users_tree.heading('ID', text='ID')
+        self.kitchen_users_tree.heading('Username', text='Username')
+        self.kitchen_users_tree.heading('Nome Completo', text='Nome Completo')
+        self.kitchen_users_tree.heading('Attivo', text='Attivo')
+        
+        self.kitchen_users_tree.column('ID', width=50)
+        self.kitchen_users_tree.column('Username', width=150)
+        self.kitchen_users_tree.column('Nome Completo', width=200)
+        self.kitchen_users_tree.column('Attivo', width=80)
+        
+        self.kitchen_users_tree.pack(fill='both', expand=True)
+        
+        # Bottoni
+        btn_frame = tk.Frame(kitchen_frame, bg=COLORS['background'])
+        btn_frame.pack(fill='x', padx=20, pady=10)
+        
+        tk.Button(btn_frame, text="➕ Aggiungi", bg=COLORS['accent'], fg='white',
+                 command=self.add_kitchen_user).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="✏️ Modifica", bg=COLORS['secondary'], fg='white',
+                 command=self.edit_kitchen_user).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="🗑️ Elimina", bg='#E74C3C', fg='white',
+                 command=self.delete_kitchen_user).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="🔄 Aggiorna", bg=COLORS['primary'], fg='white',
+                 command=self.refresh_kitchen_users).pack(side='left', padx=5)
+        
+        self.refresh_kitchen_users()
+    
+    def refresh_kitchen_users(self):
+        """Aggiorna lista utenti cucina"""
+        for item in self.kitchen_users_tree.get_children():
+            self.kitchen_users_tree.delete(item)
+        
+        # TODO: Implementare get_kitchen_users() nel database
+        # Per ora lista vuota
+        pass
+    
+    def add_kitchen_user(self):
+        """Aggiungi nuovo utente cucina"""
+        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+    
+    def edit_kitchen_user(self):
+        """Modifica utente cucina"""
+        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+    
+    def delete_kitchen_user(self):
+        """Elimina utente cucina"""
+        messagebox.showinfo("Info", "Funzionalità in sviluppo")
     
     def setup_config_tab(self):
         """TAB Configurazione"""
