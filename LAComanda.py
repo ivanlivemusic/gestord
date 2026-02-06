@@ -5130,10 +5130,11 @@ class KitchenDisplay:
                 waiter_name = order.get('waiter_name', 'Unknown')
                 table_number = order.get('table_number', '?')
                 
-                # Emit notification to waiter
+                # Emit notification to waiter with waiter_name for filtering
                 self.socketio.emit('order_ready_for_pickup', {
                     'order_id': order_id,
                     'table': table_number,
+                    'waiter_name': waiter_name,
                     'message': f"🔔 Ordine Tavolo {table_number} pronto da ritirare!",
                     'timestamp': datetime.now().strftime('%H:%M')
                 }, namespace='/')
@@ -5407,6 +5408,21 @@ class LaComanda:
             logger.error(f"Errore configurazione ngrok: {e}")
             return None
     
+    def get_local_ip(self):
+        """Get local IP address of the machine"""
+        import socket
+        try:
+            # Create a socket to determine local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Connect to a public DNS server (doesn't actually send data)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception as e:
+            logger.warning(f"Could not determine local IP: {e}")
+            return "127.0.0.1"
+    
     def start_ngrok(self):
         """Avvia ngrok tunnel per accesso remoto con gestione tunnel esistenti"""
         token = self.setup_ngrok()
@@ -5436,25 +5452,20 @@ class LaComanda:
         except Exception as e:
             logger.error(f"❌ Errore ngrok: {e}")
             
-            # Fallback: termina processi ngrok esistenti e riprova
+            # Fallback: termina solo processi ngrok senza PID tracking
+            # NOTE: This is a last-resort fallback. In production, consider maintaining
+            # PID tracking or using a process manager for better control.
             try:
-                if platform.system() == 'Windows':
-                    subprocess.run(['taskkill', '/F', '/IM', 'ngrok.exe'], 
-                                  capture_output=True, check=False)
-                else:
-                    # Find and kill ngrok processes by PID
-                    result = subprocess.run(['pgrep', 'ngrok'], 
-                                          capture_output=True, text=True, check=False)
-                    if result.stdout.strip():
-                        pids = result.stdout.strip().split('\n')
-                        for pid in pids:
-                            try:
-                                subprocess.run(['kill', pid], capture_output=True, check=False)
-                                logger.info(f"Terminato processo ngrok PID {pid}")
-                            except Exception as kill_e:
-                                logger.debug(f"Errore terminazione PID {pid}: {kill_e}")
+                logger.warning("Tentativo fallback cleanup ngrok...")
+                # Try one more disconnect via pyngrok API
+                try:
+                    ngrok.kill()
+                    time.sleep(2)
+                    logger.info("Killed ngrok process via pyngrok API")
+                except Exception as kill_api_e:
+                    logger.debug(f"pyngrok kill failed: {kill_api_e}")
                 
-                time.sleep(2)
+                # Riprova connessione
                 public_url = ngrok.connect(PORT, bind_tls=True)
                 logger.info(f"✅ Tunnel attivo (dopo cleanup): {public_url.public_url}")
                 return public_url.public_url
