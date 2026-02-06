@@ -32,6 +32,7 @@ import webbrowser
 # Flask imports
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO, emit
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Tkinter imports
 import tkinter as tk
@@ -159,7 +160,19 @@ class Database:
             )
         ''')
         
-        # Tabella menu con supporto tipo CI/CD
+        # Tabella utenti cucina
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kitchen_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT,
+                active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Tabella menu con supporto tipo CI/CD e allergeni
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS menu_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,7 +182,9 @@ class Database:
                 prezzo REAL NOT NULL,
                 descrizione TEXT,
                 tipo TEXT DEFAULT 'CD',
-                disponibile INTEGER DEFAULT 1
+                disponibile INTEGER DEFAULT 1,
+                allergeni TEXT,
+                note_dietetiche TEXT
             )
         ''')
         
@@ -324,12 +339,32 @@ class Database:
                 cursor.execute("ALTER TABLE orders ADD COLUMN reminder_timestamp TEXT")
                 conn.commit()
             
+            if 'order_type' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN order_type TEXT DEFAULT 'normal'")
+                conn.commit()
+            
+            if 'pickup_number' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN pickup_number INTEGER")
+                conn.commit()
+            
+            if 'items_variants' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN items_variants TEXT")
+                conn.commit()
+            
             # Verifica colonne tabella menu_items
             cursor.execute("PRAGMA table_info(menu_items)")
             menu_columns = {row[1] for row in cursor.fetchall()}
             
             if 'tipo' not in menu_columns:
                 cursor.execute("ALTER TABLE menu_items ADD COLUMN tipo TEXT DEFAULT 'CD'")
+                conn.commit()
+            
+            if 'allergeni' not in menu_columns:
+                cursor.execute("ALTER TABLE menu_items ADD COLUMN allergeni TEXT")
+                conn.commit()
+            
+            if 'note_dietetiche' not in menu_columns:
+                cursor.execute("ALTER TABLE menu_items ADD COLUMN note_dietetiche TEXT")
                 conn.commit()
             
             # Verifica colonne tabella order_items
@@ -561,6 +596,26 @@ class Database:
         conn.close()
         return result
     
+    def get_orders_by_status(self, statuses):
+        """Ottieni ordini per status (lista di stati)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Crea placeholders per la query
+        placeholders = ','.join(['?' for _ in statuses])
+        query = f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY timestamp DESC"
+        
+        cursor.execute(query, statuses)
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order_dict = dict(order)
+            result.append(order_dict)
+        
+        conn.close()
+        return result
+    
     def get_order_by_id(self, order_id):
         """Ottieni ordine specifico"""
         conn = self.get_connection()
@@ -752,6 +807,87 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM waiters WHERE id = ?", (waiter_id,))
+        conn.commit()
+        conn.close()
+    
+    # ==============================================================================
+    # KITCHEN USERS
+    # ==============================================================================
+    
+    def add_kitchen_user(self, username, password, full_name):
+        """Aggiungi utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        pwd_hash = generate_password_hash(password)
+        try:
+            cursor.execute(
+                "INSERT INTO kitchen_users (username, password_hash, full_name, active) VALUES (?, ?, ?, 1)",
+                (username, pwd_hash, full_name)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+    
+    def get_kitchen_user(self, username):
+        """Ottieni utente cucina per username"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM kitchen_users WHERE username = ? AND active = 1",
+            (username,)
+        )
+        user = cursor.fetchone()
+        conn.close()
+        return dict(user) if user else None
+    
+    def verify_kitchen_user(self, username, password):
+        """Verifica credenziali utente cucina"""
+        user = self.get_kitchen_user(username)
+        if user and check_password_hash(user['password_hash'], password):
+            logger.info(f"Kitchen user authentication successful: {username}")
+            return user
+        return None
+    
+    def get_all_kitchen_users(self):
+        """Ottieni tutti gli utenti cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM kitchen_users ORDER BY full_name")
+        users = cursor.fetchall()
+        conn.close()
+        return [dict(u) for u in users]
+    
+    def update_kitchen_user(self, user_id, full_name, active):
+        """Aggiorna utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE kitchen_users SET full_name = ?, active = ? WHERE id = ?",
+            (full_name, active, user_id)
+        )
+        conn.commit()
+        conn.close()
+    
+    def change_kitchen_user_password(self, user_id, new_password):
+        """Cambia password utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        pwd_hash = generate_password_hash(new_password)
+        cursor.execute(
+            "UPDATE kitchen_users SET password_hash = ? WHERE id = ?",
+            (pwd_hash, user_id)
+        )
+        conn.commit()
+        conn.close()
+    
+    def delete_kitchen_user(self, user_id):
+        """Elimina utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM kitchen_users WHERE id = ?", (user_id,))
         conn.commit()
         conn.close()
     
@@ -1011,6 +1147,43 @@ class WebApp:
             session.clear()
             return redirect(url_for('login'))
         
+        @self.app.route('/lacomanda/login-cucina', methods=['GET', 'POST'])
+        def login_cucina():
+            """Login pannello cucina web"""
+            if request.method == 'POST':
+                username = request.form.get('username')
+                password = request.form.get('password')
+                user = self.database.verify_kitchen_user(username, password)
+                
+                if user:
+                    session['kitchen_user_id'] = user['id']
+                    session['kitchen_username'] = user['username']
+                    session['kitchen_full_name'] = user.get('full_name', username)
+                    return redirect(url_for('cucina'))
+                else:
+                    return render_template('login_cucina.html', error='Credenziali non valide')
+            
+            return render_template('login_cucina.html')
+        
+        @self.app.route('/lacomanda/logout-cucina')
+        def logout_cucina():
+            """Logout pannello cucina"""
+            if 'kitchen_user_id' in session:
+                del session['kitchen_user_id']
+            if 'kitchen_username' in session:
+                del session['kitchen_username']
+            if 'kitchen_full_name' in session:
+                del session['kitchen_full_name']
+            return redirect(url_for('login_cucina'))
+        
+        @self.app.route('/lacomanda/cucina')
+        def cucina():
+            """Pannello cucina web - display ordini CD in tempo reale"""
+            if 'kitchen_user_id' not in session:
+                return redirect(url_for('login_cucina'))
+            
+            return render_template('cucina.html', user=session.get('kitchen_full_name', 'Cucina'))
+        
         @self.app.route('/lacomanda/cameriere')
         def cameriere():
             """Pagina principale cameriere - ROUTE MODIFICATA DA /"""
@@ -1113,6 +1286,36 @@ class WebApp:
         def get_menu():
             menu = self.database.get_menu_by_categories()
             return jsonify(menu)
+        
+        @self.app.route('/lacomanda/api/orders/kitchen')
+        def get_kitchen_orders():
+            """API per pannello cucina - ottieni ordini CD con status inserito/preparato/in_consegna"""
+            try:
+                # Get orders with only relevant statuses for kitchen
+                orders = self.database.get_orders_by_status(['inserito', 'preparato', 'in_consegna'])
+                
+                # Filter and format orders for kitchen
+                kitchen_orders = []
+                for order in orders:
+                    # Skip rapid and takeaway orders (show only normal orders)
+                    if order.get('order_type', 'normal') != 'normal':
+                        continue
+                    
+                    # Get order items
+                    items = self.database.get_order_items(order['id'])
+                    
+                    # Filter only CD items
+                    cd_items = [item for item in items if item.get('tipo') == 'CD']
+                    
+                    # Only include orders with CD items
+                    if cd_items:
+                        order['items'] = cd_items
+                        kitchen_orders.append(order)
+                
+                return jsonify({'success': True, 'orders': kitchen_orders})
+            except Exception as e:
+                logger.error(f"Error getting kitchen orders: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
     
     def setup_socketio(self):
         """Configura eventi SocketIO"""

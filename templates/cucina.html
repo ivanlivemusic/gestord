@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cucina - LA COMANDA</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+        }
+        .header {
+            background: #FF6B35;
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .user-info {
+            font-size: 14px;
+        }
+        .logout-btn {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid white;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            margin-left: 15px;
+        }
+        .logout-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .kitchen-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            padding: 20px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        .column {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            min-height: calc(100vh - 120px);
+        }
+        .column-header {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid;
+        }
+        .col-inserito .column-header {
+            border-color: #FFA500;
+            color: #FFA500;
+        }
+        .col-preparato .column-header {
+            border-color: #4A90E2;
+            color: #4A90E2;
+        }
+        .col-in-consegna .column-header {
+            border-color: #9B59B6;
+            color: #9B59B6;
+        }
+        .order-card {
+            background: #f9f9f9;
+            border-left: 5px solid;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            transition: transform 0.2s;
+        }
+        .order-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .order-card.inserito {
+            border-color: #FFA500;
+        }
+        .order-card.preparato {
+            border-color: #4A90E2;
+        }
+        .order-card.in_consegna {
+            border-color: #9B59B6;
+        }
+        .order-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .table-number {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .order-time {
+            font-size: 12px;
+            color: #666;
+        }
+        .order-items {
+            margin: 10px 0;
+        }
+        .order-item {
+            padding: 8px;
+            background: white;
+            margin-bottom: 5px;
+            border-radius: 3px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .item-name {
+            font-weight: 500;
+        }
+        .item-quantity {
+            color: #666;
+            font-size: 14px;
+        }
+        .waiter-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+        }
+        .action-buttons {
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+        }
+        .action-btn {
+            flex: 1;
+            padding: 8px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-preparato {
+            background: #4A90E2;
+            color: white;
+        }
+        .btn-preparato:hover {
+            background: #3A7EC2;
+        }
+        .btn-consegna {
+            background: #9B59B6;
+            color: white;
+        }
+        .btn-consegna:hover {
+            background: #8B49A6;
+        }
+        @media (max-width: 1200px) {
+            .kitchen-container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        @media (max-width: 768px) {
+            .kitchen-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🍳 Pannello Cucina</h1>
+        <div style="display: flex; align-items: center;">
+            <span class="user-info">👤 {{ user }}</span>
+            <a href="{{ url_for('logout_cucina') }}" class="logout-btn">Esci</a>
+        </div>
+    </div>
+
+    <div class="kitchen-container">
+        <!-- Colonna Inseriti -->
+        <div class="column col-inserito">
+            <div class="column-header">📥 INSERITO</div>
+            <div id="orders-inserito"></div>
+        </div>
+
+        <!-- Colonna Preparati -->
+        <div class="column col-preparato">
+            <div class="column-header">✅ PREPARATO</div>
+            <div id="orders-preparato"></div>
+        </div>
+
+        <!-- Colonna In Consegna -->
+        <div class="column col-in-consegna">
+            <div class="column-header">🚚 IN CONSEGNA</div>
+            <div id="orders-in_consegna"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        // Carica ordini iniziali
+        function loadOrders() {
+            fetch('/lacomanda/api/orders/kitchen')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        renderOrders(data.orders);
+                    }
+                });
+        }
+
+        function renderOrders(orders) {
+            // Clear columns
+            document.getElementById('orders-inserito').innerHTML = '';
+            document.getElementById('orders-preparato').innerHTML = '';
+            document.getElementById('orders-in_consegna').innerHTML = '';
+
+            // Group by status
+            orders.forEach(order => {
+                // Skip rapid and takeaway orders
+                if (order.order_type && order.order_type !== 'normal') {
+                    return;
+                }
+                
+                const card = createOrderCard(order);
+                const column = document.getElementById(`orders-${order.status}`);
+                if (column) {
+                    column.appendChild(card);
+                }
+            });
+        }
+
+        function createOrderCard(order) {
+            const card = document.createElement('div');
+            card.className = `order-card ${order.status}`;
+            card.dataset.orderId = order.id;
+
+            const header = document.createElement('div');
+            header.className = 'order-header';
+            header.innerHTML = `
+                <div class="table-number">Tavolo ${order.table_number}</div>
+                <div class="order-time">${formatTime(order.timestamp)}</div>
+            `;
+
+            const items = document.createElement('div');
+            items.className = 'order-items';
+            
+            // Get only CD items
+            const cdItems = order.items.filter(item => item.tipo === 'CD');
+            cdItems.forEach(item => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'order-item';
+                itemDiv.innerHTML = `
+                    <span class="item-name">${item.nome}</span>
+                    <span class="item-quantity">x${item.quantity}</span>
+                `;
+                items.appendChild(itemDiv);
+            });
+
+            const waiterInfo = document.createElement('div');
+            waiterInfo.className = 'waiter-info';
+            waiterInfo.textContent = `👤 ${order.waiter_name}`;
+
+            card.appendChild(header);
+            card.appendChild(items);
+            card.appendChild(waiterInfo);
+
+            // Add action buttons
+            const actions = document.createElement('div');
+            actions.className = 'action-buttons';
+            
+            if (order.status === 'inserito') {
+                const btn = document.createElement('button');
+                btn.className = 'action-btn btn-preparato';
+                btn.textContent = '✅ Segna Preparato';
+                btn.onclick = () => updateOrderStatus(order.id, 'preparato');
+                actions.appendChild(btn);
+            } else if (order.status === 'preparato') {
+                const btn = document.createElement('button');
+                btn.className = 'action-btn btn-consegna';
+                btn.textContent = '🚚 In Consegna';
+                btn.onclick = () => updateOrderStatus(order.id, 'in_consegna');
+                actions.appendChild(btn);
+            }
+
+            card.appendChild(actions);
+
+            return card;
+        }
+
+        function updateOrderStatus(orderId, newStatus) {
+            fetch(`/lacomanda/api/orders/${orderId}/status`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ status: newStatus })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    loadOrders();
+                }
+            });
+        }
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = Math.floor((now - date) / 60000); // minutes
+            
+            if (diff < 1) return 'Ora';
+            if (diff < 60) return `${diff}min`;
+            const hours = Math.floor(diff / 60);
+            return `${hours}h ${diff % 60}min`;
+        }
+
+        // Socket.IO listeners
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            loadOrders();
+        });
+
+        socket.on('new_order', () => {
+            loadOrders();
+        });
+
+        socket.on('order_updated', () => {
+            loadOrders();
+        });
+
+        // Refresh every 30 seconds
+        setInterval(loadOrders, 30000);
+
+        // Initial load
+        loadOrders();
+    </script>
+</body>
+</html>

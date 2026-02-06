@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login Cucina - LA COMANDA</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        body {
+            background: linear-gradient(135deg, #FF6B35 0%, #F7931E 100%);
+        }
+        .login-box {
+            border-top: 5px solid #FF6B35;
+        }
+        .btn-primary {
+            background: #FF6B35;
+        }
+        .btn-primary:hover {
+            background: #E65A2E;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <h1>🍳 LA COMANDA</h1>
+            <h2>Pannello Cucina</h2>
+            
+            {% if error %}
+            <div class="error-message" style="display: block;">{{ error }}</div>
+            {% endif %}
+            
+            <form method="POST" action="{{ url_for('login_cucina') }}">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" placeholder="Username" required autofocus>
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" placeholder="Password" required>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">Accedi alla Cucina</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
