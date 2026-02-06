@@ -1895,6 +1895,16 @@ class AdminConsole:
         # Ripristina geometria salvata
         self.config_manager.restore_window_geometry('admin_console', self.window, "1400x900+50+50")
         
+        # Create menubar
+        self.menubar = tk.Menu(self.window)
+        self.window.config(menu=self.menubar)
+        
+        # Developer menu
+        dev_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="🔧 Sviluppatore", menu=dev_menu)
+        dev_menu.add_command(label="🎲 Genera Dati di Test", command=self.generate_test_data)
+        dev_menu.add_command(label="🗑️ Pulisci Dati Test", command=self.clean_test_data)
+        
         self.setup_ui()
         self.refresh_orders()
         
@@ -1933,6 +1943,9 @@ class AdminConsole:
         
         # TAB 8: REMINDER CONFIGURATION
         self.setup_reminder_tab()
+        
+        # TAB 9: RECEIPT CONFIGURATION
+        self.setup_receipt_tab()
     
     def setup_orders_tab(self):
         """TAB Gestione Ordini"""
@@ -1979,6 +1992,10 @@ class AdminConsole:
         
         tk.Button(toolbar, text="🍳 QR Cucina", bg='#FF6B35', fg='white',
                  command=self.toggle_qr_cucina, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="📊 Statistiche", bg="#9C27B0", fg="white",
+                 font=('Arial', 10, 'bold'), padx=15, pady=8,
+                 command=self.open_statistics_window).pack(side='left', padx=5)
         
         # Legenda stati
         legend_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -3886,10 +3903,573 @@ DETTAGLIO ORDINE
             logger.error(f"Error getting order databases: {e}")
             return []
     
+    def open_statistics_window(self):
+        """Open statistics window"""
+        StatisticsWindow(self.window, self.database)
+    
+    def setup_receipt_tab(self):
+        """TAB Configurazione Scontrino"""
+        receipt_frame = tk.Frame(self.notebook, bg=COLORS['background'])
+        self.notebook.add(receipt_frame, text="🧾 Scontrino")
+        
+        # Header
+        header = tk.Frame(receipt_frame, bg=COLORS['primary'], height=60)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="🧾 Configurazione Scontrino", 
+                 font=('Arial', 18, 'bold'), fg='white', bg=COLORS['primary']).pack(pady=15)
+        
+        # Content with scrollbar
+        canvas = tk.Canvas(receipt_frame, bg=COLORS['background'])
+        scrollbar = ttk.Scrollbar(receipt_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=COLORS['background'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True, padx=20, pady=20)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Company Info Section
+        company_frame = tk.LabelFrame(scrollable_frame, text="🏢 Dati Azienda", 
+                                       font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        company_frame.pack(fill='x', pady=10, padx=10)
+        
+        self.company_entries = {}
+        fields = [
+            ('name', 'Nome Azienda'),
+            ('address', 'Indirizzo'),
+            ('phone', 'Telefono'),
+            ('email', 'Email'),
+            ('vat_number', 'P.IVA'),
+            ('fiscal_code', 'Codice Fiscale'),
+            ('website', 'Sito Web')
+        ]
+        
+        for i, (key, label) in enumerate(fields):
+            tk.Label(company_frame, text=label + ":", bg=COLORS['background']).grid(row=i, column=0, sticky='w', padx=10, pady=5)
+            entry = tk.Entry(company_frame, width=50)
+            entry.grid(row=i, column=1, padx=10, pady=5)
+            value = self.config_manager.config.get('CompanyInfo', key, fallback='')
+            entry.insert(0, value)
+            self.company_entries[key] = entry
+        
+        # Receipt Style Section
+        style_frame = tk.LabelFrame(scrollable_frame, text="🎨 Stile Scontrino",
+                                    font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        style_frame.pack(fill='x', pady=10, padx=10)
+        
+        tk.Label(style_frame, text="Dimensione Font:", bg=COLORS['background']).grid(row=0, column=0, sticky='w', padx=10, pady=5)
+        self.font_size_var = tk.StringVar(value=self.config_manager.config.get('ReceiptStyle', 'font_size', fallback='10'))
+        ttk.Combobox(style_frame, textvariable=self.font_size_var, values=['8', '9', '10', '11', '12', '14'], width=10).grid(row=0, column=1, padx=10, pady=5)
+        
+        tk.Label(style_frame, text="Larghezza Carta:", bg=COLORS['background']).grid(row=1, column=0, sticky='w', padx=10, pady=5)
+        self.paper_width_var = tk.StringVar(value=self.config_manager.config.get('ReceiptStyle', 'paper_width', fallback='80'))
+        ttk.Combobox(style_frame, textvariable=self.paper_width_var, values=['58', '80'], width=10).grid(row=1, column=1, padx=10, pady=5)
+        tk.Label(style_frame, text="mm", bg=COLORS['background']).grid(row=1, column=2, sticky='w', pady=5)
+        
+        tk.Label(style_frame, text="Testo Footer:", bg=COLORS['background']).grid(row=2, column=0, sticky='w', padx=10, pady=5)
+        self.footer_text_entry = tk.Entry(style_frame, width=50)
+        self.footer_text_entry.grid(row=2, column=1, columnspan=2, padx=10, pady=5)
+        self.footer_text_entry.insert(0, self.config_manager.config.get('ReceiptStyle', 'footer_text', fallback='Grazie per la visita!'))
+        
+        # Non-Fiscal Label Section
+        fiscal_frame = tk.LabelFrame(scrollable_frame, text="⚖️ Etichetta Fiscale",
+                                     font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        fiscal_frame.pack(fill='x', pady=10, padx=10)
+        
+        self.show_non_fiscal_var = tk.BooleanVar(value=self.config_manager.config.getboolean('ReceiptStyle', 'show_non_fiscal_label', fallback=True))
+        tk.Checkbutton(fiscal_frame, text="Mostra Etichetta Non Fiscale", 
+                       variable=self.show_non_fiscal_var, bg=COLORS['background']).grid(row=0, column=0, columnspan=2, sticky='w', padx=10, pady=5)
+        
+        tk.Label(fiscal_frame, text="Testo Etichetta:", bg=COLORS['background']).grid(row=1, column=0, sticky='w', padx=10, pady=5)
+        self.non_fiscal_label_entry = tk.Entry(fiscal_frame, width=50)
+        self.non_fiscal_label_entry.grid(row=1, column=1, padx=10, pady=5)
+        self.non_fiscal_label_entry.insert(0, self.config_manager.config.get('ReceiptStyle', 'non_fiscal_label_text', fallback='SCONTRINO NON FISCALE'))
+        
+        tk.Label(fiscal_frame, text="💡 Questo testo verrà visualizzato in fondo allo scontrino",
+                 font=('Arial', 8, 'italic'), bg=COLORS['background']).grid(row=2, column=0, columnspan=2, sticky='w', padx=10, pady=5)
+        
+        # Buttons
+        btn_frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
+        btn_frame.pack(fill='x', pady=20, padx=10)
+        
+        tk.Button(btn_frame, text="💾 Salva Configurazione", bg=COLORS['accent'], fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.save_receipt_config).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="👁️ Anteprima Scontrino", bg='#3498DB', fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.preview_receipt).pack(side='left', padx=5)
+
+    def save_receipt_config(self):
+        """Save receipt configuration"""
+        # Company Info
+        if 'CompanyInfo' not in self.config_manager.config:
+            self.config_manager.config['CompanyInfo'] = {}
+        for key, entry in self.company_entries.items():
+            self.config_manager.config['CompanyInfo'][key] = entry.get()
+        
+        # Receipt Style
+        if 'ReceiptStyle' not in self.config_manager.config:
+            self.config_manager.config['ReceiptStyle'] = {}
+        self.config_manager.config['ReceiptStyle']['font_size'] = self.font_size_var.get()
+        self.config_manager.config['ReceiptStyle']['paper_width'] = self.paper_width_var.get()
+        self.config_manager.config['ReceiptStyle']['footer_text'] = self.footer_text_entry.get()
+        self.config_manager.config['ReceiptStyle']['show_non_fiscal_label'] = str(self.show_non_fiscal_var.get())
+        self.config_manager.config['ReceiptStyle']['non_fiscal_label_text'] = self.non_fiscal_label_entry.get()
+        
+        self.config_manager.save_config()
+        messagebox.showinfo("✅ Successo", "Configurazione scontrino salvata")
+
+    def preview_receipt(self):
+        """Show receipt preview"""
+        # Create sample receipt text
+        config = self.config_manager.config
+        char_width = 32 if config.get('ReceiptStyle', 'paper_width', fallback='80') == '58' else 42
+        
+        receipt = "=" * char_width + "\n"
+        receipt += config.get('CompanyInfo', 'name', fallback='LA COMANDA').center(char_width) + "\n"
+        receipt += config.get('CompanyInfo', 'address', fallback='').center(char_width) + "\n"
+        receipt += config.get('CompanyInfo', 'phone', fallback='').center(char_width) + "\n"
+        receipt += "=" * char_width + "\n\n"
+        
+        receipt += "Tavolo: 5\n"
+        receipt += "Cameriere: Mario Rossi\n"
+        receipt += datetime.now().strftime("%d/%m/%Y %H:%M") + "\n"
+        receipt += "-" * char_width + "\n\n"
+        
+        receipt += "2x Pizza Margherita    €16.00\n"
+        receipt += "1x Coca Cola           €3.00\n"
+        receipt += "-" * char_width + "\n"
+        receipt += f"TOTALE:                €19.00\n\n"
+        
+        if config.get('CompanyInfo', 'vat_number', fallback=''):
+            receipt += f"P.IVA: {config.get('CompanyInfo', 'vat_number')}\n"
+        
+        receipt += "\n" + config.get('ReceiptStyle', 'footer_text', fallback='Grazie!').center(char_width) + "\n"
+        
+        if config.getboolean('ReceiptStyle', 'show_non_fiscal_label', fallback=True):
+            receipt += "\n" + config.get('ReceiptStyle', 'non_fiscal_label_text', fallback='SCONTRINO NON FISCALE').center(char_width) + "\n"
+        
+        receipt += "=" * char_width + "\n"
+        
+        # Show in dialog
+        preview_win = tk.Toplevel(self.window)
+        preview_win.title("Anteprima Scontrino")
+        preview_win.geometry("500x600")
+        
+        text_widget = scrolledtext.ScrolledText(preview_win, font=('Courier New', 10), wrap='none')
+        text_widget.pack(fill='both', expand=True, padx=10, pady=10)
+        text_widget.insert('1.0', receipt)
+        text_widget.config(state='disabled')
+        
+        tk.Button(preview_win, text="❌ Chiudi", command=preview_win.destroy).pack(pady=10)
+    
+    def generate_test_data(self):
+        """Generate comprehensive test data"""
+        if not messagebox.askyesno("Conferma", "Generare dati di test? Questo creerà database storici e ordini fittizi."):
+            return
+        
+        try:
+            import random
+            from datetime import timedelta
+            
+            # Test waiters
+            test_waiters = [
+                ('mario.rossi', 'password123', 'Mario Rossi'),
+                ('luca.bianchi', 'password123', 'Luca Bianchi'),
+                ('anna.verdi', 'password123', 'Anna Verdi'),
+                ('sofia.neri', 'password123', 'Sofia Neri'),
+                ('marco.ferrari', 'password123', 'Marco Ferrari')
+            ]
+            
+            for username, password, full_name in test_waiters:
+                self.database.add_waiter(username, password, full_name)
+            
+            # Test kitchen users
+            test_kitchen = [
+                ('chef_mario', 'password123', 'Chef Mario'),
+                ('cuoco_luca', 'password123', 'Cuoco Luca'),
+                ('aiuto_anna', 'password123', 'Aiuto Anna')
+            ]
+            
+            for username, password, full_name in test_kitchen:
+                self.database.add_kitchen_user(username, password, full_name)
+            
+            # Test products (add to menu)
+            test_products = [
+                ('Antipasti', 'Bruschetta', 6.00, 'CD'),
+                ('Antipasti', 'Caprese', 7.50, 'CD'),
+                ('Primi', 'Pasta Carbonara', 12.00, 'CD'),
+                ('Primi', 'Lasagna', 11.00, 'CD'),
+                ('Pizza', 'Margherita', 8.00, 'CD'),
+                ('Pizza', 'Diavola', 10.00, 'CD'),
+                ('Secondi', 'Bistecca', 18.00, 'CD'),
+                ('Secondi', 'Pollo Arrosto', 14.00, 'CD'),
+                ('Dolci', 'Tiramisù', 5.00, 'CI'),
+                ('Dolci', 'Panna Cotta', 4.50, 'CI'),
+                ('Bevande', 'Acqua', 2.00, 'CI'),
+                ('Bevande', 'Vino Rosso', 15.00, 'CI'),
+                ('Colazione', 'Caffè', 1.50, 'CI'),
+                ('Colazione', 'Cornetto', 2.00, 'CI'),
+                ('Colazione', 'Cappuccino', 2.50, 'CI')
+            ]
+            
+            for cat, nome, prezzo, tipo in test_products:
+                self.database.add_menu_item(cat, nome, prezzo, '', '', tipo)
+            
+            # Generate 3 history databases (3 months, 2 months, 1 month ago)
+            now = datetime.now()
+            history_dates = [
+                now - timedelta(days=90),
+                now - timedelta(days=60),
+                now - timedelta(days=30)
+            ]
+            
+            for hist_date in history_dates:
+                db_name = f"orders_history_{hist_date.strftime('%Y-%m-%d')}.db"
+                hist_db = Database(db_name)
+                
+                # Generate 50-150 random orders for this period
+                num_orders = random.randint(50, 150)
+                for _ in range(num_orders):
+                    # Random date within that month
+                    order_date = hist_date + timedelta(days=random.randint(0, 29))
+                    order_time = order_date.replace(hour=random.randint(11, 22), minute=random.randint(0, 59))
+                    
+                    # Random order details
+                    table = random.randint(1, 20)
+                    people = random.randint(1, 6)
+                    waiter = random.choice(test_waiters)
+                    
+                    # Random items (2-5 items)
+                    num_items = random.randint(2, 5)
+                    items = []
+                    for _ in range(num_items):
+                        product = random.choice(test_products)
+                        items.append({
+                            'id': random.randint(1, len(test_products)),
+                            'name': product[1],
+                            'quantity': random.randint(1, 3),
+                            'price': product[2],
+                            'tipo': product[3]
+                        })
+                    
+                    # 70% normal, 20% rapid, 10% takeaway
+                    rand = random.random()
+                    if rand < 0.7:
+                        order_type = 'normal'
+                    elif rand < 0.9:
+                        order_type = 'rapid'
+                    else:
+                        order_type = 'takeaway'
+                    
+                    # Create order
+                    order_id = hist_db.create_order(table, people, waiter[0], waiter[2], items, '', order_type)
+                    
+                    # Set as paid with random discount
+                    discount_types = ['none', 'none', 'none', 'percentage', 'fixed']
+                    discount_type = random.choice(discount_types)
+                    discount_value = random.choice([0, 5, 10, 15]) if discount_type != 'none' else 0
+                    
+                    # Update to paid status
+                    conn = hist_db.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE orders 
+                        SET status = 'pagato', 
+                            discount_type = ?,
+                            discount_value = ?,
+                            timestamp = ?
+                        WHERE id = ?
+                    """, (discount_type, discount_value, order_time.isoformat(), order_id))
+                    conn.commit()
+                    conn.close()
+            
+            # Generate 10-30 orders in current database
+            num_current = random.randint(10, 30)
+            for _ in range(num_current):
+                order_time = now - timedelta(hours=random.randint(0, 8))
+                table = random.randint(1, 20)
+                people = random.randint(1, 6)
+                waiter = random.choice(test_waiters)
+                
+                num_items = random.randint(2, 5)
+                items = []
+                for _ in range(num_items):
+                    product = random.choice(test_products)
+                    items.append({
+                        'id': random.randint(1, len(test_products)),
+                        'name': product[1],
+                        'quantity': random.randint(1, 3),
+                        'price': product[2],
+                        'tipo': product[3]
+                    })
+                
+                rand = random.random()
+                order_type = 'normal' if rand < 0.7 else ('rapid' if rand < 0.9 else 'takeaway')
+                
+                order_id = self.database.create_order(table, people, waiter[0], waiter[2], items, '', order_type)
+                
+                # Some paid, some in progress
+                if random.random() < 0.6:
+                    conn = self.database.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE orders SET status = 'pagato' WHERE id = ?", (order_id,))
+                    conn.commit()
+                    conn.close()
+            
+            self.refresh_orders()
+            messagebox.showinfo("✅ Successo", f"Dati di test generati:\n- 5 camerieri\n- 3 utenti cucina\n- 15 prodotti menu\n- 3 database storici\n- Ordini casuali")
+            
+        except Exception as e:
+            logger.error(f"Error generating test data: {e}")
+            messagebox.showerror("Errore", f"Errore generazione dati: {e}")
+
+    def clean_test_data(self):
+        """Clean test data"""
+        if not messagebox.askyesno("Conferma", "Eliminare TUTTI i dati di test? ATTENZIONE: Azione irreversibile!"):
+            return
+        
+        try:
+            # Remove history databases
+            for file in os.listdir('.'):
+                if file.startswith('orders_history_') and file.endswith('.db'):
+                    os.remove(file)
+                    logger.info(f"Removed {file}")
+            
+            messagebox.showinfo("✅ Successo", "Database storici di test rimossi")
+        except Exception as e:
+            logger.error(f"Error cleaning test data: {e}")
+            messagebox.showerror("Errore", f"Errore pulizia dati: {e}")
+    
     def on_close(self):
         """Salva configurazione al chiudere"""
         self.config_manager.save_window_geometry('admin_console', self.window)
         self.window.destroy()
+
+
+# ==============================================================================
+# STATISTICS WINDOW
+# ==============================================================================
+
+class StatisticsWindow:
+    """Finestra Statistiche con 3 tab"""
+    
+    def __init__(self, parent, database):
+        self.database = database
+        self.window = tk.Toplevel(parent)
+        self.window.title("📊 Statistiche - La Comanda")
+        self.window.geometry("1000x700")
+        
+        # Notebook for tabs
+        self.notebook = ttk.Notebook(self.window)
+        self.notebook.pack(fill='both', expand=True)
+        
+        self.setup_economic_tab()
+        self.setup_performance_tab()
+        self.setup_products_tab()
+    
+    def get_all_databases(self):
+        """Get all order databases including history (EXCLUDE backups/)"""
+        dbs = []
+        if os.path.exists('orders.db'):
+            dbs.append('orders.db')
+        
+        # Get orders_history_*.db files (NOT in backups/ folder)
+        for file in os.listdir('.'):
+            if file.startswith('orders_history') and file.endswith('.db'):
+                full_path = os.path.join('.', file)
+                if os.path.isfile(full_path):
+                    dbs.append(file)
+        
+        return dbs
+    
+    def setup_economic_tab(self):
+        """💰 Tab Economiche"""
+        frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(frame, text="💰 Economiche")
+        
+        # Statistics summary
+        stats_frame = tk.LabelFrame(frame, text="Riepilogo Economico", font=('Arial', 12, 'bold'))
+        stats_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate stats from all databases
+        total_revenue = 0
+        total_orders = 0
+        
+        for db_file in self.get_all_databases():
+            try:
+                conn = sqlite3.connect(db_file)
+                cursor = conn.cursor()
+                # Get paid orders with totals
+                cursor.execute("""
+                    SELECT COUNT(*), SUM(total) 
+                    FROM orders 
+                    WHERE status = 'pagato'
+                """)
+                count, revenue = cursor.fetchone()
+                total_orders += count or 0
+                total_revenue += revenue or 0
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error reading {db_file}: {e}")
+        
+        avg_ticket = total_revenue / total_orders if total_orders > 0 else 0
+        
+        tk.Label(stats_frame, text=f"Incasso Totale: €{total_revenue:.2f}", 
+                 font=('Arial', 14, 'bold')).pack(anchor='w', padx=10, pady=5)
+        tk.Label(stats_frame, text=f"Ordini Totali: {total_orders}",
+                 font=('Arial', 12)).pack(anchor='w', padx=10, pady=3)
+        tk.Label(stats_frame, text=f"Scontrino Medio: €{avg_ticket:.2f}",
+                 font=('Arial', 12)).pack(anchor='w', padx=10, pady=3)
+        
+        # Graph frame
+        graph_frame = tk.LabelFrame(frame, text="Incasso nel Tempo", font=('Arial', 12, 'bold'))
+        graph_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Add matplotlib graph here (revenue over time)
+        self.create_revenue_graph(graph_frame)
+    
+    def create_revenue_graph(self, parent):
+        """Create revenue over time graph"""
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+            import pandas as pd
+            
+            # Collect data from all databases
+            all_orders = []
+            for db_file in self.get_all_databases():
+                try:
+                    conn = sqlite3.connect(db_file)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT DATE(timestamp) as date, SUM(total) as revenue
+                        FROM orders
+                        WHERE status = 'pagato'
+                        GROUP BY DATE(timestamp)
+                        ORDER BY date
+                    """)
+                    all_orders.extend(cursor.fetchall())
+                    conn.close()
+                except Exception as e:
+                    logger.error(f"Error reading {db_file}: {e}")
+            
+            if all_orders:
+                dates, revenues = zip(*all_orders)
+                
+                fig = Figure(figsize=(8, 4), dpi=100)
+                ax = fig.add_subplot(111)
+                ax.plot(range(len(dates)), revenues, marker='o', linestyle='-', color='#2ECC71')
+                ax.set_xlabel('Data')
+                ax.set_ylabel('Incasso (€)')
+                ax.set_title('Incasso Giornaliero')
+                ax.grid(True, alpha=0.3)
+                
+                # Rotate x-labels for readability
+                ax.set_xticks(range(0, len(dates), max(1, len(dates)//10)))
+                ax.set_xticklabels([dates[i] for i in range(0, len(dates), max(1, len(dates)//10))], rotation=45)
+                
+                fig.tight_layout()
+                
+                canvas = FigureCanvasTkAgg(fig, parent)
+                canvas.draw()
+                canvas.get_tk_widget().pack(fill='both', expand=True)
+            else:
+                tk.Label(parent, text="Nessun dato disponibile", font=('Arial', 14)).pack(pady=50)
+                
+        except Exception as e:
+            logger.error(f"Error creating graph: {e}")
+            tk.Label(parent, text=f"Errore grafico: {e}", font=('Arial', 12)).pack(pady=50)
+    
+    def setup_performance_tab(self):
+        """⚡ Tab Performance"""
+        frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(frame, text="⚡ Performance")
+        
+        tk.Label(frame, text="Performance Statistics", font=('Arial', 16, 'bold')).pack(pady=20)
+        
+        # Kitchen performance
+        kitchen_frame = tk.LabelFrame(frame, text="👨‍🍳 Cucina", font=('Arial', 12, 'bold'))
+        kitchen_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate average preparation time for CD orders
+        # TODO: Implement timing tracking
+        tk.Label(kitchen_frame, text="Tempo Medio Preparazione CD: Da implementare",
+                 font=('Arial', 11)).pack(anchor='w', padx=10, pady=5)
+        tk.Label(kitchen_frame, text="% Ordini oltre 25 min: Da implementare",
+                 font=('Arial', 11)).pack(anchor='w', padx=10, pady=5)
+        
+        # Waiter performance
+        waiter_frame = tk.LabelFrame(frame, text="👨‍💼 Camerieri", font=('Arial', 12, 'bold'))
+        waiter_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate per-waiter stats
+        waiter_stats = {}
+        for db_file in self.get_all_databases():
+            try:
+                conn = sqlite3.connect(db_file)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT waiter_name, COUNT(*), SUM(total)
+                    FROM orders
+                    WHERE status = 'pagato'
+                    GROUP BY waiter_name
+                """)
+                for waiter, count, revenue in cursor.fetchall():
+                    if waiter not in waiter_stats:
+                        waiter_stats[waiter] = {'orders': 0, 'revenue': 0}
+                    waiter_stats[waiter]['orders'] += count or 0
+                    waiter_stats[waiter]['revenue'] += revenue or 0
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error reading {db_file}: {e}")
+        
+        for waiter, stats in sorted(waiter_stats.items(), key=lambda x: x[1]['revenue'], reverse=True):
+            tk.Label(waiter_frame, text=f"{waiter}: {stats['orders']} ordini, €{stats['revenue']:.2f}",
+                     font=('Arial', 11)).pack(anchor='w', padx=10, pady=2)
+    
+    def setup_products_tab(self):
+        """🍕 Tab Prodotti"""
+        frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(frame, text="🍕 Prodotti")
+        
+        tk.Label(frame, text="Statistiche Prodotti", font=('Arial', 16, 'bold')).pack(pady=20)
+        
+        # Top products frame
+        top_frame = tk.LabelFrame(frame, text="🏆 Top 10 Piatti", font=('Arial', 12, 'bold'))
+        top_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate top products
+        product_sales = {}
+        for db_file in self.get_all_databases():
+            try:
+                conn = sqlite3.connect(db_file)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT oi.menu_item_name, SUM(oi.quantity)
+                    FROM order_items oi
+                    JOIN orders o ON oi.order_id = o.id
+                    WHERE o.status = 'pagato'
+                    GROUP BY oi.menu_item_name
+                """)
+                for product, qty in cursor.fetchall():
+                    product_sales[product] = product_sales.get(product, 0) + (qty or 0)
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error reading {db_file}: {e}")
+        
+        # Sort and display top 10
+        top_products = sorted(product_sales.items(), key=lambda x: x[1], reverse=True)[:10]
+        for i, (product, qty) in enumerate(top_products, 1):
+            tk.Label(top_frame, text=f"{i}. {product}: {qty} venduti",
+                     font=('Arial', 11)).pack(anchor='w', padx=10, pady=2)
 
 
 # ==============================================================================
