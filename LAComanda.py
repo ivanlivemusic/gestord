@@ -1556,6 +1556,51 @@ class WebApp:
             except Exception as e:
                 logger.error(f"Error getting kitchen orders: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/lacomanda/api/my-ready-orders')
+        def my_ready_orders():
+            """Get orders ready for pickup for current waiter"""
+            waiter_name = session.get('full_name') or session.get('waiter_user')
+            if not waiter_name:
+                return jsonify({'error': 'Non autenticato'}), 401
+            
+            try:
+                orders = self.database.get_ready_orders_for_waiter(waiter_name)
+                return jsonify(orders)
+            except Exception as e:
+                logger.error(f"Error getting ready orders: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/lacomanda/api/pickup-order', methods=['POST'])
+        def pickup_order():
+            """Mark order as picked up and in delivery"""
+            if 'user_id' not in session and 'waiter_id' not in session:
+                return jsonify({'error': 'Non autenticato'}), 401
+            
+            try:
+                data = request.get_json()
+                order_id = data.get('order_id')
+                
+                if not order_id:
+                    return jsonify({'error': 'Order ID mancante'}), 400
+                
+                # Update status to in_consegna
+                success = self.database.update_order_status(order_id, 'in_consegna')
+                
+                if success:
+                    # Emit socketio event
+                    self.socketio.emit('order_status_changed', {
+                        'order_id': order_id,
+                        'new_status': 'in_consegna'
+                    }, broadcast=True)
+                    
+                    return jsonify({'success': True})
+                else:
+                    return jsonify({'error': 'Errore aggiornamento'}), 500
+                    
+            except Exception as e:
+                logger.error(f"Error picking up order: {e}")
+                return jsonify({'error': str(e)}), 500
     
     def setup_socketio(self):
         """Configura eventi SocketIO"""
@@ -4812,10 +4857,11 @@ class StatisticsWindow:
 class KitchenDisplay:
     """Display cucina con finestra ridimensionabile e splitters"""
     
-    def __init__(self, parent, database, config_manager):
+    def __init__(self, parent, database, config_manager, socketio=None):
         self.parent = parent
         self.database = database
         self.config_manager = config_manager
+        self.socketio = socketio
         
         self.window = tk.Toplevel(parent)
         self.window.title("LA COMANDA - Display Cucina | www.ivanlivemusic.com")
@@ -5071,8 +5117,29 @@ class KitchenDisplay:
 
     
     def change_status(self, order_id, new_status):
-        """Cambia stato ordine"""
+        """Cambia stato ordine e notifica cameriere se preparato"""
         self.database.update_order_status(order_id, new_status)
+        
+        # Se l'ordine è stato marcato come preparato, imposta timestamp e invia notifica
+        if new_status == 'preparato':
+            self.database.set_prepared_timestamp(order_id, datetime.now())
+            
+            # Get order details for notification
+            order = self.database.get_order(order_id)
+            if order and self.socketio:
+                waiter_name = order.get('waiter_name', 'Unknown')
+                table_number = order.get('table_number', '?')
+                
+                # Emit notification to waiter
+                self.socketio.emit('order_ready_for_pickup', {
+                    'order_id': order_id,
+                    'table': table_number,
+                    'message': f"🔔 Ordine Tavolo {table_number} pronto da ritirare!",
+                    'timestamp': datetime.now().strftime('%H:%M')
+                }, namespace='/')
+                
+                logger.info(f"✅ Notifica ritiro → {waiter_name} (Ordine #{order_id}, Tavolo {table_number})")
+        
         self.refresh_display()
     
     def update_clock(self):
@@ -5139,7 +5206,7 @@ class LaComanda:
         # Crea finestre Tkinter
         self.qr_window = QRCodeWindow(self.root, self.ngrok_url, self.config_manager)
         self.admin_console = AdminConsole(self.root, self.database, self.webapp.socketio, self.config_manager)
-        self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager)
+        self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager, self.webapp.socketio)
         
         # Nascondi inizialmente kitchen display e QR window secondo configurazione
         try:
