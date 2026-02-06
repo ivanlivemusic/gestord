@@ -28,10 +28,15 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import csv
 import webbrowser
+import shutil
+import platform
+import tempfile
+import glob
 
 # Flask imports
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO, emit
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Tkinter imports
 import tkinter as tk
@@ -59,11 +64,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# SECURITY NOTE: Set NGROK_AUTH_TOKEN environment variable for remote access
+# SECURITY NOTE: Ngrok auth token should be configured in LaComanda.conf [Ngrok] section
+# or set as NGROK_AUTH_TOKEN environment variable for remote access
 # Without this token, the system will only be accessible on local network
 # Get your token from: https://dashboard.ngrok.com/get-started/your-authtoken
 # DO NOT commit tokens to repository
-NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "")
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'la-comanda-secret-key-change-in-production')
 
 PORT = 5000
@@ -97,6 +102,18 @@ REMINDER_ICONS = {
     'normal': '⏱️',
     'warning': '⚠️',
     'urgent': '🔥'
+}
+
+# Icone allergeni
+ALLERGENI_ICONS = {
+    'glutine': '🌾',
+    'lattosio': '🥛',
+    'uova': '🥚',
+    'frutta_secca': '🥜',
+    'pesce': '🐟',
+    'crostacei': '🦐',
+    'soia': '🫘',
+    'sedano': '🥬'
 }
 
 # Icone categorie
@@ -159,7 +176,19 @@ class Database:
             )
         ''')
         
-        # Tabella menu con supporto tipo CI/CD
+        # Tabella utenti cucina
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kitchen_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT,
+                active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Tabella menu con supporto tipo CI/CD e allergeni
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS menu_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,7 +198,9 @@ class Database:
                 prezzo REAL NOT NULL,
                 descrizione TEXT,
                 tipo TEXT DEFAULT 'CD',
-                disponibile INTEGER DEFAULT 1
+                disponibile INTEGER DEFAULT 1,
+                allergeni TEXT,
+                note_dietetiche TEXT
             )
         ''')
         
@@ -324,12 +355,32 @@ class Database:
                 cursor.execute("ALTER TABLE orders ADD COLUMN reminder_timestamp TEXT")
                 conn.commit()
             
+            if 'order_type' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN order_type TEXT DEFAULT 'normal'")
+                conn.commit()
+            
+            if 'pickup_number' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN pickup_number INTEGER")
+                conn.commit()
+            
+            if 'items_variants' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN items_variants TEXT")
+                conn.commit()
+            
             # Verifica colonne tabella menu_items
             cursor.execute("PRAGMA table_info(menu_items)")
             menu_columns = {row[1] for row in cursor.fetchall()}
             
             if 'tipo' not in menu_columns:
                 cursor.execute("ALTER TABLE menu_items ADD COLUMN tipo TEXT DEFAULT 'CD'")
+                conn.commit()
+            
+            if 'allergeni' not in menu_columns:
+                cursor.execute("ALTER TABLE menu_items ADD COLUMN allergeni TEXT")
+                conn.commit()
+            
+            if 'note_dietetiche' not in menu_columns:
+                cursor.execute("ALTER TABLE menu_items ADD COLUMN note_dietetiche TEXT")
                 conn.commit()
             
             # Verifica colonne tabella order_items
@@ -407,7 +458,7 @@ class Database:
         return None
     
     def load_menu_from_csv(self, csv_path=MENU_CSV):
-        """Carica menu da CSV con supporto tipo CI/CD"""
+        """Carica menu da CSV con supporto tipo CI/CD, allergeni e note dietetiche"""
         if not os.path.exists(csv_path):
             return False
         
@@ -420,11 +471,14 @@ class Database:
             reader = csv.DictReader(f)
             for row in reader:
                 tipo = row.get('Tipo', 'CD')  # Default CD se non specificato
+                allergeni = row.get('Allergeni', '')
+                note_dietetiche = row.get('Note_Dietetiche', '')
+                
                 cursor.execute(
-                    """INSERT INTO menu_items (categoria, sottocategoria, nome, prezzo, descrizione, tipo)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO menu_items (categoria, sottocategoria, nome, prezzo, descrizione, tipo, allergeni, note_dietetiche)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (row['Categoria'], row.get('Sottocategoria'), row['Nome'],
-                     float(row['Prezzo']), row.get('Descrizione'), tipo)
+                     float(row['Prezzo']), row.get('Descrizione'), tipo, allergeni, note_dietetiche)
                 )
         
         conn.commit()
@@ -556,6 +610,26 @@ class Database:
             
             order_dict = dict(order)
             order_dict['items'] = [dict(item) for item in items]
+            result.append(order_dict)
+        
+        conn.close()
+        return result
+    
+    def get_orders_by_status(self, statuses):
+        """Ottieni ordini per status (lista di stati)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Crea placeholders per la query
+        placeholders = ','.join(['?' for _ in statuses])
+        query = f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY timestamp DESC"
+        
+        cursor.execute(query, statuses)
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order_dict = dict(order)
             result.append(order_dict)
         
         conn.close()
@@ -752,6 +826,87 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM waiters WHERE id = ?", (waiter_id,))
+        conn.commit()
+        conn.close()
+    
+    # ==============================================================================
+    # KITCHEN USERS
+    # ==============================================================================
+    
+    def add_kitchen_user(self, username, password, full_name):
+        """Aggiungi utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        pwd_hash = generate_password_hash(password)
+        try:
+            cursor.execute(
+                "INSERT INTO kitchen_users (username, password_hash, full_name, active) VALUES (?, ?, ?, 1)",
+                (username, pwd_hash, full_name)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+    
+    def get_kitchen_user(self, username):
+        """Ottieni utente cucina per username"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM kitchen_users WHERE username = ? AND active = 1",
+            (username,)
+        )
+        user = cursor.fetchone()
+        conn.close()
+        return dict(user) if user else None
+    
+    def verify_kitchen_user(self, username, password):
+        """Verifica credenziali utente cucina"""
+        user = self.get_kitchen_user(username)
+        if user and check_password_hash(user['password_hash'], password):
+            logger.info(f"Kitchen user authentication successful: {username}")
+            return user
+        return None
+    
+    def get_all_kitchen_users(self):
+        """Ottieni tutti gli utenti cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM kitchen_users ORDER BY full_name")
+        users = cursor.fetchall()
+        conn.close()
+        return [dict(u) for u in users]
+    
+    def update_kitchen_user(self, user_id, full_name, active):
+        """Aggiorna utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE kitchen_users SET full_name = ?, active = ? WHERE id = ?",
+            (full_name, active, user_id)
+        )
+        conn.commit()
+        conn.close()
+    
+    def change_kitchen_user_password(self, user_id, new_password):
+        """Cambia password utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        pwd_hash = generate_password_hash(new_password)
+        cursor.execute(
+            "UPDATE kitchen_users SET password_hash = ? WHERE id = ?",
+            (pwd_hash, user_id)
+        )
+        conn.commit()
+        conn.close()
+    
+    def delete_kitchen_user(self, user_id):
+        """Elimina utente cucina"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM kitchen_users WHERE id = ?", (user_id,))
         conn.commit()
         conn.close()
     
@@ -1011,6 +1166,43 @@ class WebApp:
             session.clear()
             return redirect(url_for('login'))
         
+        @self.app.route('/lacomanda/login-cucina', methods=['GET', 'POST'])
+        def login_cucina():
+            """Login pannello cucina web"""
+            if request.method == 'POST':
+                username = request.form.get('username')
+                password = request.form.get('password')
+                user = self.database.verify_kitchen_user(username, password)
+                
+                if user:
+                    session['kitchen_user_id'] = user['id']
+                    session['kitchen_username'] = user['username']
+                    session['kitchen_full_name'] = user.get('full_name', username)
+                    return redirect(url_for('cucina'))
+                else:
+                    return render_template('login_cucina.html', error='Credenziali non valide')
+            
+            return render_template('login_cucina.html')
+        
+        @self.app.route('/lacomanda/logout-cucina')
+        def logout_cucina():
+            """Logout pannello cucina"""
+            if 'kitchen_user_id' in session:
+                del session['kitchen_user_id']
+            if 'kitchen_username' in session:
+                del session['kitchen_username']
+            if 'kitchen_full_name' in session:
+                del session['kitchen_full_name']
+            return redirect(url_for('login_cucina'))
+        
+        @self.app.route('/lacomanda/cucina')
+        def cucina():
+            """Pannello cucina web - display ordini CD in tempo reale"""
+            if 'kitchen_user_id' not in session:
+                return redirect(url_for('login_cucina'))
+            
+            return render_template('cucina.html', user=session.get('kitchen_full_name', 'Cucina'))
+        
         @self.app.route('/lacomanda/cameriere')
         def cameriere():
             """Pagina principale cameriere - ROUTE MODIFICATA DA /"""
@@ -1113,6 +1305,36 @@ class WebApp:
         def get_menu():
             menu = self.database.get_menu_by_categories()
             return jsonify(menu)
+        
+        @self.app.route('/lacomanda/api/orders/kitchen')
+        def get_kitchen_orders():
+            """API per pannello cucina - ottieni ordini CD con status inserito/preparato/in_consegna"""
+            try:
+                # Get orders with only relevant statuses for kitchen
+                orders = self.database.get_orders_by_status(['inserito', 'preparato', 'in_consegna'])
+                
+                # Filter and format orders for kitchen
+                kitchen_orders = []
+                for order in orders:
+                    # Skip rapid and takeaway orders (show only normal orders)
+                    if order.get('order_type', 'normal') != 'normal':
+                        continue
+                    
+                    # Get order items
+                    items = self.database.get_order_items(order['id'])
+                    
+                    # Filter only CD items
+                    cd_items = [item for item in items if item.get('tipo') == 'CD']
+                    
+                    # Only include orders with CD items
+                    if cd_items:
+                        order['items'] = cd_items
+                        kitchen_orders.append(order)
+                
+                return jsonify({'success': True, 'orders': kitchen_orders})
+            except Exception as e:
+                logger.error(f"Error getting kitchen orders: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
     
     def setup_socketio(self):
         """Configura eventi SocketIO"""
@@ -1197,6 +1419,9 @@ class ConfigManager:
             'email': 'info@lacomanda.it',
             'vat_number': 'IT12345678901',
             'website': 'www.ivanlivemusic.com'
+        }
+        self.config['Ngrok'] = {
+            'authtoken': ''
         }
         self.save_config()
     
@@ -1341,19 +1566,37 @@ class ConfigManager:
 # ==============================================================================
 
 class QRCodeWindow:
-    """Finestra QR Code migliorata"""
+    """Finestra QR Code migliorata con supporto per Cameriere e Cucina"""
+    
+    QR_MODES = {
+        'cameriere': {
+            'title': '📱 LA COMANDA - Cameriere',
+            'url_path': '/lacomanda/login',
+            'color': '#4A90E2',
+            'instruction': 'Inquadra il QR code o usa il link per accedere\nalla web app per camerieri'
+        },
+        'cucina': {
+            'title': '🍳 LA COMANDA - Cucina',
+            'url_path': '/lacomanda/login-cucina',
+            'color': '#FF6B35',
+            'instruction': 'Inquadra il QR code o usa il link per accedere\nalla web app per la cucina'
+        }
+    }
     
     def __init__(self, parent, ngrok_url, config_manager):
         self.parent = parent
         self.ngrok_url = ngrok_url
         self.config_manager = config_manager
         
+        # Carica modalità salvata o default a 'cameriere'
+        qr_config = self.config_manager.get_window_config('qr_window')
+        self.current_mode = qr_config.get('mode', 'cameriere')
+        
         self.window = tk.Toplevel(parent)
-        self.window.title("LA COMANDA - Accesso Web | www.ivanlivemusic.com")
         self.window.configure(bg=COLORS['background'])
         
         # Ripristina geometria salvata
-        self.config_manager.restore_window_geometry('qr_window', self.window, "400x500+100+100")
+        self.config_manager.restore_window_geometry('qr_window', self.window, "450x600+100+100")
         
         self.setup_ui()
         
@@ -1364,73 +1607,147 @@ class QRCodeWindow:
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
     def setup_ui(self):
-        """Setup UI migliorata"""
-        # Header
-        header = tk.Frame(self.window, bg=COLORS['primary'], height=80)
-        header.pack(fill='x')
-        header.pack_propagate(False)
+        """Setup UI migliorata con selezione modalità"""
+        mode_config = self.QR_MODES[self.current_mode]
         
-        title = tk.Label(header, text="�� Accesso Web", font=('Arial', 20, 'bold'),
-                        bg=COLORS['primary'], fg='white')
-        title.pack(pady=20)
+        # Aggiorna titolo finestra
+        self.window.title(f"{mode_config['title']} | www.ivanlivemusic.com")
+        
+        # Header
+        self.header = tk.Frame(self.window, bg=mode_config['color'], height=80)
+        self.header.pack(fill='x')
+        self.header.pack_propagate(False)
+        
+        self.title_label = tk.Label(self.header, text=mode_config['title'], 
+                                     font=('Arial', 20, 'bold'),
+                                     bg=mode_config['color'], fg='white')
+        self.title_label.pack(pady=20)
         
         # Container principale
         main_frame = tk.Frame(self.window, bg=COLORS['background'])
         main_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
+        # Selezione modalità
+        mode_frame = tk.Frame(main_frame, bg=COLORS['background'])
+        mode_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(mode_frame, text="Modalità:", font=('Arial', 11, 'bold'),
+                bg=COLORS['background']).pack(side='left', padx=(0, 10))
+        
+        self.mode_var = tk.StringVar(value=self.current_mode)
+        mode_combo = ttk.Combobox(mode_frame, textvariable=self.mode_var, 
+                                  values=['cameriere', 'cucina'],
+                                  state='readonly', width=15, font=('Arial', 11))
+        mode_combo.pack(side='left')
+        mode_combo.bind('<<ComboboxSelected>>', self.on_mode_change)
+        
         # Sezione URL
-        url_frame = tk.LabelFrame(main_frame, text="🔗 Link di accesso", font=('Arial', 12, 'bold'),
-                                  bg=COLORS['background'], fg=COLORS['primary'])
-        url_frame.pack(fill='x', pady=10)
+        self.url_frame = tk.LabelFrame(main_frame, text="🔗 Link di accesso", 
+                                       font=('Arial', 12, 'bold'),
+                                       bg=COLORS['background'], fg=mode_config['color'])
+        self.url_frame.pack(fill='x', pady=10)
         
         # URL display + Copy button
-        url_display_frame = tk.Frame(url_frame, bg=COLORS['background'])
+        url_display_frame = tk.Frame(self.url_frame, bg=COLORS['background'])
         url_display_frame.pack(fill='x', padx=10, pady=10)
         
-        self.url_text = tk.Entry(url_display_frame, font=('Courier', 11), justify='center',
+        self.url_text = tk.Entry(url_display_frame, font=('Courier', 10), justify='center',
                                  state='readonly', relief='flat', bg='white')
         self.url_text.pack(side='left', fill='x', expand=True, padx=(0, 10))
-        self.url_text.config(state='normal')
-        self.url_text.insert(0, f"{self.ngrok_url}/lacomanda/cameriere")
-        self.url_text.config(state='readonly')
         
-        copy_btn = tk.Button(url_display_frame, text="📋 Copia", font=('Arial', 10, 'bold'),
-                            bg=COLORS['accent'], fg='white', command=self.copy_url,
-                            relief='flat', padx=15, pady=5)
-        copy_btn.pack(side='left')
+        self.copy_btn = tk.Button(url_display_frame, text="📋 Copia", font=('Arial', 10, 'bold'),
+                                  bg=mode_config['color'], fg='white', command=self.copy_url,
+                                  relief='flat', padx=15, pady=5)
+        self.copy_btn.pack(side='left')
         
         # Sezione QR Code
-        qr_frame = tk.LabelFrame(main_frame, text="📱 Scansiona con smartphone",
-                                 font=('Arial', 12, 'bold'),
-                                 bg=COLORS['background'], fg=COLORS['primary'])
-        qr_frame.pack(fill='both', expand=True, pady=10)
+        self.qr_frame = tk.LabelFrame(main_frame, text="📱 Scansiona con smartphone",
+                                      font=('Arial', 12, 'bold'),
+                                      bg=COLORS['background'], fg=mode_config['color'])
+        self.qr_frame.pack(fill='both', expand=True, pady=10)
+        
+        # QR Code container con bordo colorato
+        self.qr_container = tk.Frame(self.qr_frame, bg=mode_config['color'], padx=10, pady=10)
+        self.qr_container.pack(pady=20)
         
         # Genera e mostra QR code
-        qr_label = tk.Label(qr_frame, bg='white')
-        qr_label.pack(pady=20)
-        
-        qr_img = self.generate_qr_code()
-        qr_label.config(image=qr_img)
-        qr_label.image = qr_img
+        self.qr_label = tk.Label(self.qr_container, bg='white')
+        self.qr_label.pack()
         
         # Istruzioni
-        instructions = tk.Label(main_frame, 
-                               text="ℹ️ Inquadra il QR code o usa il link per accedere\nalla web app per camerieri",
-                               font=('Arial', 10),
-                               bg=COLORS['background'], fg=COLORS['primary'],
-                               justify='center')
-        instructions.pack(pady=10)
+        self.instructions = tk.Label(main_frame, 
+                                     text=mode_config['instruction'],
+                                     font=('Arial', 10),
+                                     bg=COLORS['background'], fg=COLORS['primary'],
+                                     justify='center')
+        self.instructions.pack(pady=10)
         
         # Bottone apri browser
-        open_btn = tk.Button(main_frame, text="🌐 Apri nel Browser", font=('Arial', 11, 'bold'),
-                            bg=COLORS['secondary'], fg='white', command=self.open_browser,
-                            relief='flat', padx=20, pady=10)
-        open_btn.pack(pady=10)
+        self.open_btn = tk.Button(main_frame, text="🌐 Apri nel Browser", 
+                                  font=('Arial', 11, 'bold'),
+                                  bg=mode_config['color'], fg='white', 
+                                  command=self.open_browser,
+                                  relief='flat', padx=20, pady=10)
+        self.open_btn.pack(pady=10)
+        
+        # Aggiorna display
+        self.update_display()
+    
+    
+    
+    def on_mode_change(self, event=None):
+        """Callback quando cambia la modalità"""
+        self.current_mode = self.mode_var.get()
+        # Salva modalità in config
+        qr_config = self.config_manager.get_window_config('qr_window')
+        qr_config['mode'] = self.current_mode
+        self.config_manager.save_window_config('qr_window', qr_config)
+        
+        # Aggiorna display
+        self.update_display()
+    
+    def update_display(self):
+        """Aggiorna display in base alla modalità corrente"""
+        mode_config = self.QR_MODES[self.current_mode]
+        
+        # Aggiorna titolo finestra
+        self.window.title(f"{mode_config['title']} | www.ivanlivemusic.com")
+        
+        # Aggiorna colori header
+        self.header.config(bg=mode_config['color'])
+        self.title_label.config(text=mode_config['title'], bg=mode_config['color'])
+        
+        # Aggiorna colori frames
+        self.url_frame.config(fg=mode_config['color'])
+        self.qr_frame.config(fg=mode_config['color'])
+        
+        # Aggiorna colori bottoni
+        self.copy_btn.config(bg=mode_config['color'])
+        self.open_btn.config(bg=mode_config['color'])
+        
+        # Aggiorna bordo container QR
+        self.qr_container.config(bg=mode_config['color'])
+        
+        # Aggiorna URL
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        self.url_text.config(state='normal')
+        self.url_text.delete(0, 'end')
+        self.url_text.insert(0, full_url)
+        self.url_text.config(state='readonly')
+        
+        # Aggiorna istruzioni
+        self.instructions.config(text=mode_config['instruction'])
+        
+        # Rigenera QR code
+        qr_img = self.generate_qr_code()
+        self.qr_label.config(image=qr_img)
+        self.qr_label.image = qr_img
     
     def generate_qr_code(self):
-        """Genera QR code per accesso cameriere"""
-        # Aggiungi /lacomanda/cameriere al URL
-        full_url = f"{self.ngrok_url}/lacomanda/cameriere"
+        """Genera QR code per la modalità corrente"""
+        mode_config = self.QR_MODES[self.current_mode]
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        
         qr = qrcode.QRCode(version=1, box_size=8, border=2)
         qr.add_data(full_url)
         qr.make(fit=True)
@@ -1442,22 +1759,26 @@ class QRCodeWindow:
     
     def copy_url(self):
         """Copia URL negli appunti"""
-        full_url = f"{self.ngrok_url}/lacomanda/cameriere"
+        mode_config = self.QR_MODES[self.current_mode]
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
         self.window.clipboard_clear()
         self.window.clipboard_append(full_url)
         messagebox.showinfo("✅ Copiato", "Link copiato negli appunti!")
     
     def open_browser(self):
         """Apri URL nel browser"""
-        full_url = f"{self.ngrok_url}/lacomanda/cameriere"
+        mode_config = self.QR_MODES[self.current_mode]
+        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
         webbrowser.open(full_url)
     
     def on_close(self):
         """Salva configurazione al chiudere"""
         self.config_manager.save_window_geometry('qr_window', self.window)
+        # Salva anche la modalità corrente
+        qr_config = self.config_manager.get_window_config('qr_window')
+        qr_config['mode'] = self.current_mode
+        self.config_manager.save_window_config('qr_window', qr_config)
         self.window.destroy()
-
-
 # ==============================================================================
 # ADMIN CONSOLE - COMPLETAMENTE RINNOVATA
 # ==============================================================================
@@ -1507,10 +1828,13 @@ class AdminConsole:
         # TAB 5: GESTIONE CAMERIERI
         self.setup_waiters_tab()
         
-        # TAB 6: ORARI E CONFIGURAZIONE
+        # TAB 6: UTENTI CUCINA
+        self.setup_kitchen_users_tab()
+        
+        # TAB 7: ORARI E CONFIGURAZIONE
         self.setup_config_tab()
         
-        # TAB 7: CONTROLLI FINESTRE
+        # TAB 8: CONTROLLI FINESTRE
         self.setup_windows_control_tab()
     
     def setup_orders_tab(self):
@@ -1549,6 +1873,9 @@ class AdminConsole:
         
         tk.Button(toolbar, text="🗑️ Elimina Ordine", bg=COLORS['state_inserito'], fg='white',
                  command=self.delete_order, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="💾 Backup Ora", bg=COLORS['primary'], fg='white',
+                 command=self.backup_now, **btn_style).pack(side='left', padx=5)
         
         # Legenda stati
         legend_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2371,6 +2698,12 @@ DETTAGLIO ORDINE
                  command=self.view_history_details).pack(side='left', padx=5)
         tk.Button(btn_frame, text="🖨️ Ristampa", bg=COLORS['secondary'], fg='white',
                  command=self.reprint_receipt).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="📂 Apri Storico", bg=COLORS['accent'], fg='white',
+                 command=self.open_historic_database).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="♻️ Storicizza", bg=COLORS['secondary'], fg='white',
+                 command=self.storicizza_ordini).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="📊 Statistiche", bg=COLORS['primary'], fg='white',
+                 command=self.show_statistics).pack(side='left', padx=5)
     
     def search_history(self):
         """Cerca ordini storici"""
@@ -2416,6 +2749,20 @@ DETTAGLIO ORDINE
             messagebox.showwarning("Attenzione", "Seleziona un ordine")
             return
         messagebox.showinfo("Info", "Funzionalità da implementare")
+    
+    def open_historic_database(self):
+        """Apri database storico"""
+        filename = filedialog.askopenfilename(
+            title="Seleziona Database Storico",
+            filetypes=[("Database files", "*.db"), ("All files", "*.*")]
+        )
+        if filename:
+            # TODO: Aprire StoricOrdersWindow con il database selezionato
+            messagebox.showinfo("Info", f"Database selezionato: {filename}\n\nFunzionalità StoricOrdersWindow in sviluppo")
+    
+    def show_statistics(self):
+        """Mostra statistiche"""
+        messagebox.showinfo("📊 Statistiche", "Coming soon - Funzionalità in sviluppo")
     
     def setup_waiters_tab(self):
         """TAB Gestione Camerieri"""
@@ -2628,6 +2975,81 @@ DETTAGLIO ORDINE
             messagebox.showinfo("✅ Successo", "Cameriere eliminato")
             self.refresh_waiters()
     
+    def setup_kitchen_users_tab(self):
+        """TAB Utenti Cucina"""
+        kitchen_frame = tk.Frame(self.notebook, bg=COLORS['background'])
+        self.notebook.add(kitchen_frame, text="👨‍🍳 Utenti Cucina")
+        
+        # Header
+        header = tk.Frame(kitchen_frame, bg=COLORS['primary'], height=60)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="👨‍🍳 Gestione Utenti Cucina", font=('Arial', 18, 'bold'),
+                bg=COLORS['primary'], fg='white').pack(side='left', padx=20, pady=15)
+        
+        # Treeview
+        tree_frame = tk.Frame(kitchen_frame, bg='white')
+        tree_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.pack(side='right', fill='y')
+        
+        self.kitchen_users_tree = ttk.Treeview(tree_frame, columns=('ID', 'Username', 'Nome Completo', 'Attivo'),
+                                        show='headings', yscrollcommand=scrollbar.set, height=15)
+        scrollbar.config(command=self.kitchen_users_tree.yview)
+        
+        self.kitchen_users_tree.heading('ID', text='ID')
+        self.kitchen_users_tree.heading('Username', text='Username')
+        self.kitchen_users_tree.heading('Nome Completo', text='Nome Completo')
+        self.kitchen_users_tree.heading('Attivo', text='Attivo')
+        
+        self.kitchen_users_tree.column('ID', width=50)
+        self.kitchen_users_tree.column('Username', width=150)
+        self.kitchen_users_tree.column('Nome Completo', width=200)
+        self.kitchen_users_tree.column('Attivo', width=80)
+        
+        self.kitchen_users_tree.pack(fill='both', expand=True)
+        
+        # Bottoni
+        btn_frame = tk.Frame(kitchen_frame, bg=COLORS['background'])
+        btn_frame.pack(fill='x', padx=20, pady=10)
+        
+        tk.Button(btn_frame, text="➕ Aggiungi", bg=COLORS['accent'], fg='white',
+                 command=self.add_kitchen_user).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="✏️ Modifica", bg=COLORS['secondary'], fg='white',
+                 command=self.edit_kitchen_user).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="🗑️ Elimina", bg='#E74C3C', fg='white',
+                 command=self.delete_kitchen_user).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="🔄 Aggiorna", bg=COLORS['primary'], fg='white',
+                 command=self.refresh_kitchen_users).pack(side='left', padx=5)
+        
+        self.refresh_kitchen_users()
+    
+    def refresh_kitchen_users(self):
+        """Aggiorna lista utenti cucina"""
+        for item in self.kitchen_users_tree.get_children():
+            self.kitchen_users_tree.delete(item)
+        
+        kitchen_users = self.database.get_all_kitchen_users()
+        for user in kitchen_users:
+            self.kitchen_users_tree.insert('', 'end', iid=user['id'], values=(
+                user['id'], user['username'], user['full_name'],
+                '✅' if user['active'] else '❌'
+            ))
+    
+    def add_kitchen_user(self):
+        """Aggiungi nuovo utente cucina"""
+        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+    
+    def edit_kitchen_user(self):
+        """Modifica utente cucina"""
+        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+    
+    def delete_kitchen_user(self):
+        """Elimina utente cucina"""
+        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+    
     def setup_config_tab(self):
         """TAB Configurazione"""
         config_frame = tk.Frame(self.notebook, bg=COLORS['background'])
@@ -2825,10 +3247,206 @@ DETTAGLIO ORDINE
     
     def save_window_prefs(self):
         """Salva preferenze finestre"""
-        self.config_manager.config['kitchen_display']['visible'] = str(self.kitchen_visible.get()).lower()
-        self.config_manager.config['qr_window']['visible'] = str(self.qr_visible.get()).lower()
+        self.config_manager.config['kitchen_display']['visible'] = 'true' if self.kitchen_visible.get() else 'false'
+        self.config_manager.config['qr_window']['visible'] = 'true' if self.qr_visible.get() else 'false'
         self.config_manager.save_config()
         messagebox.showinfo("✅ Successo", "Preferenze salvate")
+    
+    def storicizza_ordini(self):
+        """Archive current orders_history.db file"""
+        try:
+            history_db = 'orders_history.db'
+            
+            # Check if orders_history.db exists
+            if not os.path.exists(history_db):
+                messagebox.showwarning("⚠️ Attenzione", "File orders_history.db non trovato")
+                return
+            
+            # Show confirmation dialog
+            result = messagebox.askyesno("📦 Storicizza Ordini", 
+                                        "Vuoi archiviare il database orders_history.db?\n\n"
+                                        "Verrà rinominato con la data dell'ultimo ordine\n"
+                                        "e verrà creato un nuovo database vuoto.")
+            if not result:
+                return
+            
+            # Get last order date from database
+            conn = sqlite3.connect(history_db)
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(timestamp) FROM orders")
+            last_date = cursor.fetchone()[0]
+            
+            if last_date:
+                # Extract date from timestamp (format: YYYY-MM-DD HH:MM:SS or similar)
+                date_str = last_date.split()[0] if ' ' in last_date else last_date[:10]
+            else:
+                # No orders, use current date
+                date_str = datetime.now().strftime('%Y-%m-%d')
+            
+            # Close connection
+            conn.close()
+            
+            # Create new filename
+            new_filename = f'orders_history_{date_str}.db'
+            
+            # Check if destination file already exists
+            if os.path.exists(new_filename):
+                counter = 1
+                while os.path.exists(f'orders_history_{date_str}_{counter}.db'):
+                    counter += 1
+                new_filename = f'orders_history_{date_str}_{counter}.db'
+            
+            # Rename the file
+            os.rename(history_db, new_filename)
+            logger.info(f"Archived orders_history.db to {new_filename}")
+            
+            # Create new empty orders_history.db with same schema
+            conn = sqlite3.connect(history_db)
+            cursor = conn.cursor()
+            
+            # Get schema from the archived database
+            old_conn = sqlite3.connect(new_filename)
+            old_cursor = old_conn.cursor()
+            old_cursor.execute("SELECT sql FROM sqlite_master WHERE type='table'")
+            tables_sql = old_cursor.fetchall()
+            old_conn.close()
+            
+            # Create tables in new database
+            for sql_tuple in tables_sql:
+                if sql_tuple[0]:
+                    cursor.execute(sql_tuple[0])
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Created new empty orders_history.db")
+            messagebox.showinfo("✅ Successo", 
+                              f"Database archiviato come:\n{new_filename}\n\n"
+                              f"Nuovo database orders_history.db creato")
+            
+        except Exception as e:
+            logger.error(f"Error archiving orders_history.db: {e}")
+            messagebox.showerror("❌ Errore", f"Errore durante l'archiviazione:\n{str(e)}")
+    
+    def backup_now(self):
+        """Manual backup function"""
+        try:
+            # Create backups directory with today's date
+            today = datetime.now().strftime('%Y-%m-%d')
+            backup_dir = os.path.join('backups', today)
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%H%M%S')
+            
+            # Files to backup
+            files_to_backup = [
+                ('orders.db', f'orders_{today}_{timestamp}.db'),
+                ('orders_history.db', f'orders_history_{today}_{timestamp}.db'),
+                ('menu.csv', f'menu_{today}_{timestamp}.csv')
+            ]
+            
+            backed_up = []
+            for source, dest in files_to_backup:
+                if os.path.exists(source):
+                    dest_path = os.path.join(backup_dir, dest)
+                    shutil.copy2(source, dest_path)
+                    backed_up.append(dest)
+                    logger.info(f"Backed up {source} to {dest_path}")
+            
+            if backed_up:
+                messagebox.showinfo("✅ Successo", 
+                                  f"Backup completato!\n\n"
+                                  f"Location: {backup_dir}\n\n"
+                                  f"Files:\n" + "\n".join([f"• {f}" for f in backed_up]))
+            else:
+                messagebox.showwarning("⚠️ Attenzione", "Nessun file da backuppare trovato")
+            
+        except Exception as e:
+            logger.error(f"Error creating backup: {e}")
+            messagebox.showerror("❌ Errore", f"Errore durante il backup:\n{str(e)}")
+    
+    def print_receipt(self, receipt_text):
+        """Print receipt function"""
+        temp_file = None
+        try:
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
+                f.write(receipt_text)
+                temp_file = f.name
+            
+            logger.info(f"Created temp receipt file: {temp_file}")
+            
+            # Platform-specific print command
+            system = platform.system()
+            
+            if system == 'Windows':
+                os.startfile(temp_file, 'print')
+                logger.info("Sent to printer using Windows startfile")
+            elif system == 'Darwin':  # macOS
+                subprocess.run(['lpr', temp_file], check=True)
+                logger.info("Sent to printer using lpr (macOS)")
+            else:  # Linux
+                subprocess.run(['lp', temp_file], check=True)
+                logger.info("Sent to printer using lp (Linux)")
+            
+            messagebox.showinfo("✅ Successo", "Scontrino inviato alla stampante")
+            
+            # Schedule file deletion after 30 seconds to ensure print completes
+            def delete_temp_file():
+                time.sleep(30)
+                try:
+                    if temp_file and os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                        logger.info(f"Deleted temp file: {temp_file}")
+                except Exception as e:
+                    logger.error(f"Error deleting temp file: {e}")
+            
+            threading.Thread(target=delete_temp_file, daemon=True).start()
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Print command failed: {e}")
+            messagebox.showerror("❌ Errore", 
+                               f"Errore durante la stampa.\n"
+                               f"Verifica che la stampante sia configurata.")
+        except Exception as e:
+            logger.error(f"Error printing receipt: {e}")
+            messagebox.showerror("❌ Errore", f"Errore durante la stampa:\n{str(e)}")
+            # Cleanup on error
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except Exception as e:
+                    # Log but don't fail - temp file will be cleaned up by OS eventually
+                    logger.warning(f"Could not delete temp file on error: {e}")
+    
+    def get_all_order_databases(self):
+        """Get list of all order databases"""
+        try:
+            databases = []
+            
+            # Add main orders.db if it exists
+            if os.path.exists('orders.db'):
+                databases.append('orders.db')
+            
+            # Find all orders_history*.db files
+            history_files = glob.glob('orders_history*.db')
+            
+            # Filter out any files in backups/ subdirectory
+            for db_file in history_files:
+                # Exclude if path contains 'backups' directory component
+                path_parts = os.path.normpath(db_file).split(os.sep)
+                if 'backups' not in path_parts:
+                    databases.append(db_file)
+            
+            # Sort the list
+            databases.sort()
+            
+            logger.info(f"Found {len(databases)} order databases: {databases}")
+            return databases
+            
+        except Exception as e:
+            logger.error(f"Error getting order databases: {e}")
+            return []
     
     def on_close(self):
         """Salva configurazione al chiudere"""
@@ -3159,8 +3777,15 @@ class LaComanda:
         self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager)
         
         # Nascondi inizialmente kitchen display e QR window secondo configurazione
-        kitchen_visible = self.config_manager.config.get('kitchen_display', {}).get('visible', 'false') == 'true'
-        qr_visible = self.config_manager.config.get('qr_window', {}).get('visible', 'false') == 'true'
+        try:
+            kitchen_visible = self.config_manager.config.getboolean('kitchen_display', 'visible', fallback=False)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            kitchen_visible = False
+        
+        try:
+            qr_visible = self.config_manager.config.getboolean('qr_window', 'visible', fallback=False)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            qr_visible = False
         
         if not kitchen_visible:
             self.kitchen_display.window.withdraw()
@@ -3296,15 +3921,52 @@ class LaComanda:
             if migrated > 0:
                 logger.info(f"Migrati {migrated} ordini completati al database storico")
     
+    def setup_ngrok(self):
+        """Configura ngrok con token da configurazione"""
+        try:
+            token = self.config_manager.config.get('Ngrok', 'authtoken', fallback='')
+            
+            # Prova anche la variabile d'ambiente come fallback
+            if not token:
+                token = os.environ.get('NGROK_AUTH_TOKEN', '')
+            
+            if token:
+                # Prova prima con subprocess per configurare token persistentemente
+                try:
+                    result = subprocess.run(
+                        ['ngrok', 'config', 'add-authtoken', token], 
+                        capture_output=True, 
+                        text=True, 
+                        check=True,
+                        timeout=10
+                    )
+                    logger.info("Ngrok token configurato correttamente via CLI")
+                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    # Se fallisce, usa l'API Python di pyngrok
+                    stderr = getattr(e, 'stderr', '')
+                    logger.debug(f"CLI ngrok non disponibile ({e.__class__.__name__}), uso pyngrok. Stderr: {stderr}")
+                    ngrok.set_auth_token(token)
+                    logger.info("Ngrok token configurato correttamente via pyngrok")
+                
+                return token
+            else:
+                logger.warning("Token ngrok non trovato in LaComanda.conf o variabile d'ambiente")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Errore configurazione ngrok: {e}")
+            return None
+    
     def start_ngrok(self):
         """Avvia ngrok tunnel per accesso remoto"""
-        if not NGROK_TOKEN:
+        token = self.setup_ngrok()
+        
+        if not token:
             logger.warning("NGROK_AUTH_TOKEN non configurato. Il sistema funzionerà solo in localhost.")
-            logger.warning("Per accesso remoto, impostare la variabile d'ambiente NGROK_AUTH_TOKEN")
+            logger.warning("Per accesso remoto, configurare [Ngrok] authtoken in LaComanda.conf")
             return f"http://localhost:{PORT}"
         
         try:
-            ngrok.set_auth_token(NGROK_TOKEN)
             public_url = ngrok.connect(PORT, bind_tls=True)
             logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
             return public_url.public_url
