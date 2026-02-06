@@ -352,3 +352,36 @@ Sviluppato per semplificare la gestione degli ordini nei ristoranti.
 ---
 
 *www.ivanlivemusic.com*
+
+## 📋 Menu.csv - Formato File
+
+Il file `menu.csv` contiene il menu del ristorante con il seguente formato:
+
+```csv
+Categoria,Sottocategoria,Nome,Prezzo,Descrizione,Tipo
+Antipasti,,Bruschetta al Pomodoro,6.50,Pane tostato con pomodori freschi,CD
+Bevande,Bibite,Coca Cola,3.00,Coca Cola 33cl,CI
+```
+
+### Colonna "Tipo" - Sistema CI/CD
+
+La colonna **Tipo** definisce il flusso di lavoro dell'ordine:
+
+- **CI (Consegna Immediata)**: Items che non richiedono preparazione in cucina
+  - Esempi: Bevande, Caffè, Items pre-confezionati
+  - Flusso: Ordine → Consegna diretta al tavolo
+  - Timer reminder: 10 minuti
+
+- **CD (Cucina/Delivery)**: Items che richiedono preparazione
+  - Esempi: Pizze, Primi piatti, Secondi, Contorni cotti
+  - Flusso: Ordine → Cucina (Inserito → Preparato) → Consegna
+  - Timer reminder: 25 minuti (in preparazione), 5 minuti (pronto per consegna)
+
+### Assegnazione Automatica Tipo
+
+Il sistema assegna automaticamente:
+- **CI**: Bevande, Caffetteria
+- **CD**: Tutte le altre categorie
+
+Per modificare il tipo di un item, editare il valore nella colonna Tipo del file menu.csv.
+

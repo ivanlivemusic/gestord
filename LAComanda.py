@@ -28,8 +28,6 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import csv
 import webbrowser
-import platform
-import ctypes
 
 # Flask imports
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
@@ -61,9 +59,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# SECURITY NOTE: For production, set NGROK_AUTH_TOKEN environment variable
-# Current hardcoded token is for development/testing only
-NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "33QsRShp08GVLeGoBmh5Usdwvjw_7DZg6nr29UTfnHMrfnzyX")
+# SECURITY NOTE: For production, MUST set NGROK_AUTH_TOKEN environment variable
+# DO NOT commit tokens to repository - this default is for local development only
+NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "")
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'la-comanda-secret-key-change-in-production')
 
 PORT = 5000
@@ -2405,7 +2403,7 @@ DETTAGLIO ORDINE
         )
         if filename:
             # TODO: Implementa export CSV
-            messagebox.showinfo("✅ Successo", f"Storico esportato in {filename}")
+            messagebox.showinfo("⚠️ Non Implementato", "Funzionalità di export CSV in fase di sviluppo")
     
     def reprint_receipt(self):
         """Ristampa scontrino"""
@@ -3232,9 +3230,15 @@ class LaComanda:
                 logger.error(f"Errore check reminder ordine {order['id']}: {e}")
     
     def send_reminder_notification(self, order, reminder_type):
-        """Invia notifica reminder"""
+        """Invia notifica reminder
+        
+        NOTE: Currently logs reminders only. Future implementation will include:
+        - Visual popup notifications
+        - System sound alerts  
+        - Taskbar flash (Windows/Linux)
+        - Optional email/SMS notifications
+        """
         logger.info(f"Reminder {reminder_type} per ordine {order['id']}")
-        # TODO: Implementare notifiche popup/sound
         # Marca reminder come inviato
         conn = self.database.get_connection()
         cursor = conn.cursor()
@@ -3249,32 +3253,59 @@ class LaComanda:
         """Controlla se è fine giornata e migra ordini"""
         hours = self.config_manager.get_business_hours()
         now = datetime.now()
-        current_time = now.strftime('%H:%M')
+        current_time = now.time()
         
         mode = hours.get('mode', 'single')
         
         if mode == 'single':
-            end_time = hours.get('slot1_end', '23:00')
+            end_time_str = hours.get('slot1_end', '23:00')
         else:
-            end_time = hours.get('slot2_end', '01:00')
+            end_time_str = hours.get('slot2_end', '01:00')
         
-        # Controlla se siamo alla fine del turno (con margine di 5 min)
-        # TODO: Implementare logica più robusta per overnight hours
-        if current_time >= end_time:
+        # Parse end time
+        try:
+            end_hour, end_min = map(int, end_time_str.split(':'))
+            end_time = datetime.now().replace(hour=end_hour, minute=end_min, second=0, microsecond=0).time()
+        except:
+            logger.error(f"Errore parsing end_time: {end_time_str}")
+            return
+        
+        # Handle overnight hours (e.g., closing at 01:00 means 1 AM next day)
+        # If end_hour < 12 (early morning hours), consider it as next day
+        is_overnight = end_hour < 12
+        
+        # Check if we're at closing time (with 5 min margin)
+        margin = timedelta(minutes=5)
+        current_dt = datetime.combine(datetime.today(), current_time)
+        end_dt = datetime.combine(datetime.today(), end_time)
+        
+        if is_overnight and current_time.hour >= 12:
+            # Current time is PM, end time is AM (next day)
+            end_dt = end_dt + timedelta(days=1)
+        
+        time_diff = end_dt - current_dt
+        
+        # If within 5 minutes of closing time, migrate
+        if timedelta(0) <= time_diff <= margin:
             logger.info("Fine giornata rilevata, avvio migrazione ordini...")
             migrated = self.database.migrate_completed_orders()
             if migrated > 0:
                 logger.info(f"Migrati {migrated} ordini completati al database storico")
     
     def start_ngrok(self):
-        """Avvia ngrok"""
+        """Avvia ngrok tunnel per accesso remoto"""
+        if not NGROK_TOKEN:
+            logger.warning("NGROK_AUTH_TOKEN non configurato. Il sistema funzionerà solo in localhost.")
+            logger.warning("Per accesso remoto, impostare la variabile d'ambiente NGROK_AUTH_TOKEN")
+            return f"http://localhost:{PORT}"
+        
         try:
             ngrok.set_auth_token(NGROK_TOKEN)
             public_url = ngrok.connect(PORT, bind_tls=True)
             logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
             return public_url.public_url
         except Exception as e:
-            logger.warning(f"Errore ngrok: {e}. Utilizzo localhost.")
+            logger.warning(f"Errore ngrok: {e}. Il sistema funzionerà solo in localhost.")
             return f"http://localhost:{PORT}"
     
     def run(self):
