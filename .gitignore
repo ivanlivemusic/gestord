@@ -54,3 +54,9 @@ ngrok.yml
 
 # La Comanda configuration (user-specific)
 LaComanda.conf
+
+# Backups directory
+backups/
+
+# Historic order databases
+orders_history_*.db
