@@ -1957,7 +1957,8 @@ class AdminConsole:
         
         # Try to connect
         try:
-            self.sio_client.connect('http://localhost:5000', wait_timeout=5)
+            server_url = f'http://localhost:{PORT}'
+            self.sio_client.connect(server_url, wait_timeout=5)
             logger.info("Socket.IO client connected successfully")
         except Exception as e:
             logger.warning(f"Could not connect Socket.IO: {e}. Using polling mode.")
