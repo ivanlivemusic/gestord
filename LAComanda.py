@@ -22,6 +22,8 @@ import threading
 import time
 import configparser
 import json
+import logging
+import re
 from datetime import datetime
 from io import BytesIO
 import csv
@@ -45,6 +47,17 @@ from pyngrok import ngrok
 # ==============================================================================
 # CONFIGURAZIONE
 # ==============================================================================
+
+# Configura sistema di logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('lacomanda.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # SECURITY NOTE: For production, set NGROK_AUTH_TOKEN environment variable
 # Current hardcoded token is for development/testing only
@@ -99,6 +112,7 @@ class Database:
     def __init__(self, db_name=DB_NAME):
         self.db_name = db_name
         self.init_database()
+        self.upgrade_schema()
     
     def get_connection(self):
         """Crea connessione al database"""
@@ -188,6 +202,61 @@ class Database:
             self.add_user("cameriere", "password", "Cameriere Default")
         
         conn.close()
+    
+    def upgrade_schema(self):
+        """Aggiorna schema database per retrocompatibilità - aggiunge colonne mancanti"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Verifica colonne tabella orders
+            cursor.execute("PRAGMA table_info(orders)")
+            columns = {row[1] for row in cursor.fetchall()}
+            
+            # Aggiungi colonne mancanti nella tabella orders
+            if 'timestamp' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'timestamp' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN timestamp TEXT DEFAULT ''")
+                # Aggiorna i record esistenti con timestamp corrente
+                cursor.execute("UPDATE orders SET timestamp = datetime('now') WHERE timestamp = '' OR timestamp IS NULL")
+                conn.commit()
+            
+            if 'discount_type' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'discount_type' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN discount_type TEXT DEFAULT 'none'")
+                conn.commit()
+            
+            if 'discount_value' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'discount_value' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN discount_value REAL DEFAULT 0")
+                conn.commit()
+            
+            if 'status' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'status' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'inserito'")
+                conn.commit()
+            
+            if 'notes' not in columns:
+                logger.warning("Aggiornamento schema: aggiunta colonna 'notes' alla tabella orders")
+                cursor.execute("ALTER TABLE orders ADD COLUMN notes TEXT")
+                conn.commit()
+            
+            # Aggiungi indici per performance
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_timestamp ON orders(timestamp DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)")
+            
+            # Abilita WAL mode per migliori performance con concorrenza
+            cursor.execute("PRAGMA journal_mode=WAL")
+            
+            conn.commit()
+            logger.info("Schema database aggiornato con successo")
+            
+        except Exception as e:
+            logger.error(f"Errore durante aggiornamento schema: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
     
     def hash_password(self, password):
         """Hash password con SHA256"""
@@ -317,31 +386,47 @@ class Database:
         conn.close()
     
     def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes=""):
-        """Crea nuovo ordine"""
+        """Crea nuovo ordine con gestione errori"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        timestamp = datetime.now().isoformat()
-        
-        cursor.execute(
-            """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'inserito')""",
-            (table_number, num_people, waiter_id, waiter_name, timestamp, notes)
-        )
-        
-        order_id = cursor.lastrowid
-        
-        for item in items:
+        try:
+            timestamp = datetime.now().isoformat()
+            
             cursor.execute(
-                """INSERT INTO order_items (order_id, menu_item_id, menu_item_name, quantity, price, categoria)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (order_id, item['menu_item_id'], item['nome'], item['quantity'],
-                 item['prezzo'], item.get('categoria', ''))
+                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'inserito')""",
+                (table_number, num_people, waiter_id, waiter_name, timestamp, notes)
             )
-        
-        conn.commit()
-        conn.close()
-        return order_id
+            
+            order_id = cursor.lastrowid
+            
+            for item in items:
+                cursor.execute(
+                    """INSERT INTO order_items (order_id, menu_item_id, menu_item_name, quantity, price, categoria)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (order_id, item.get('menu_item_id', 0), item.get('nome', ''), 
+                     item.get('quantity', 1), item.get('prezzo', 0.0), item.get('categoria', ''))
+                )
+            
+            conn.commit()
+            logger.info(f"Ordine {order_id} creato nel database")
+            return order_id
+            
+        except sqlite3.Error as e:
+            logger.error(f"Errore database durante creazione ordine: {e}")
+            conn.rollback()
+            raise Exception(f"Errore database: {e}")
+        except KeyError as e:
+            logger.error(f"Campo mancante nei dati item: {e}")
+            conn.rollback()
+            raise Exception(f"Campo mancante in item ordine: {e}")
+        except Exception as e:
+            logger.error(f"Errore generico durante creazione ordine: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     
     def get_all_orders(self):
         """Ottieni tutti gli ordini con items"""
@@ -538,22 +623,64 @@ class WebApp:
         @self.app.route('/api/orders', methods=['POST'])
         def create_order():
             if 'user_id' not in session:
+                logger.warning("Tentativo di creare ordine senza autenticazione")
                 return jsonify({'success': False, 'error': 'Non autenticato'}), 401
             
-            data = request.json
-            order_id = self.database.create_order(
-                data['table_number'],
-                data['num_people'],
-                session['user_id'],
-                session['full_name'],
-                data['items'],
-                data.get('notes', '')
-            )
-            
-            # Notifica via socketio
-            self.socketio.emit('new_order', {'order_id': order_id}, namespace='/')
-            
-            return jsonify({'success': True, 'order_id': order_id})
+            try:
+                data = request.json
+                logger.info(f"Ricevuto ordine: {data}")
+                
+                # Validazione dati
+                if not data:
+                    logger.error("Dati JSON mancanti nella richiesta")
+                    return jsonify({'success': False, 'error': 'Dati mancanti'}), 400
+                
+                table_number = data.get('table_number')
+                num_people = data.get('num_people')
+                items = data.get('items', [])
+                notes = data.get('notes', '')
+                
+                # Verifica campi obbligatori
+                if not table_number:
+                    logger.error("Numero tavolo mancante")
+                    return jsonify({'success': False, 'error': 'Numero tavolo mancante'}), 400
+                
+                if not num_people:
+                    logger.error("Numero persone mancante")
+                    return jsonify({'success': False, 'error': 'Numero persone mancante'}), 400
+                
+                if not items or len(items) == 0:
+                    logger.error("Nessun item nell'ordine")
+                    return jsonify({'success': False, 'error': 'Ordine vuoto'}), 400
+                
+                # Crea ordine
+                order_id = self.database.create_order(
+                    table_number,
+                    num_people,
+                    session['user_id'],
+                    session['full_name'],
+                    items,
+                    notes
+                )
+                
+                logger.info(f"Ordine creato con successo: ID={order_id}, Tavolo={table_number}, Cameriere={session['full_name']}")
+                
+                # Notifica via socketio
+                try:
+                    self.socketio.emit('new_order', {'order_id': order_id}, namespace='/')
+                    logger.debug(f"Notifica SocketIO inviata per ordine {order_id}")
+                except Exception as socket_error:
+                    logger.error(f"Errore invio notifica SocketIO: {socket_error}")
+                    # Non fallire l'ordine se la notifica fallisce
+                
+                return jsonify({'success': True, 'order_id': order_id})
+                
+            except KeyError as ke:
+                logger.error(f"Campo mancante nei dati ordine: {ke}")
+                return jsonify({'success': False, 'error': f'Campo mancante: {ke}'}), 400
+            except Exception as e:
+                logger.error(f"Errore durante creazione ordine: {e}", exc_info=True)
+                return jsonify({'success': False, 'error': f'Errore interno: {str(e)}'}), 500
         
         @self.app.route('/api/orders/<int:order_id>/status', methods=['PUT'])
         def update_order_status(order_id):
@@ -586,11 +713,11 @@ class WebApp:
         
         @self.socketio.on('connect')
         def handle_connect():
-            print('Client connesso')
+            logger.info('Client WebSocket connesso')
         
         @self.socketio.on('disconnect')
         def handle_disconnect():
-            print('Client disconnesso')
+            logger.info('Client WebSocket disconnesso')
     
     def run(self):
         """Avvia server Flask"""
@@ -618,6 +745,14 @@ class ConfigManager:
     
     def create_default_config(self):
         """Crea configurazione default"""
+        # Main window è nascosta (withdrawn), dimensioni minime intenzionali
+        self.config['main_window'] = {
+            'x': '0',
+            'y': '0',
+            'width': '200',
+            'height': '100',
+            'state': 'withdrawn'
+        }
         self.config['admin_console'] = {
             'x': '50',
             'y': '50',
@@ -657,6 +792,77 @@ class ConfigManager:
         for key, value in config_dict.items():
             self.config[window_name][key] = str(value)
         self.save_config()
+    
+    def save_window_geometry(self, window_name, window):
+        """Salva geometria e stato finestra Tkinter"""
+        try:
+            geometry = window.geometry()  # Formato: "widthxheight+x+y" or "widthxheight-x-y"
+            state = window.state()  # normal, zoomed, iconic
+            
+            # Parse geometry string preserving sign of coordinates
+            # Format: WIDTHxHEIGHT±X±Y (e.g., "800x600+100+50" or "800x600-20+50")
+            match = re.match(r'(\d+)x(\d+)([-+]\d+)([-+]\d+)', geometry)
+            
+            if match:
+                width, height, x, y = match.groups()
+                
+                config = {
+                    'width': width,
+                    'height': height,
+                    'x': x,
+                    'y': y,
+                    'state': state
+                }
+                
+                self.save_window_config(window_name, config)
+                logger.debug(f"Salvata geometria finestra {window_name}: {geometry}, state={state}")
+        except Exception as e:
+            logger.error(f"Errore salvataggio geometria finestra {window_name}: {e}")
+    
+    def restore_window_geometry(self, window_name, window, default_geometry="800x600+100+100"):
+        """Ripristina geometria e stato finestra Tkinter"""
+        try:
+            config = self.get_window_config(window_name)
+            
+            if config and 'width' in config and 'height' in config:
+                width = config.get('width', '800')
+                height = config.get('height', '600')
+                x = config.get('x', '100')
+                y = config.get('y', '100')
+                state = config.get('state', 'normal')
+                
+                geometry = f"{width}x{height}+{x}+{y}"
+                window.geometry(geometry)
+                
+                # Ripristina stato (normal, zoomed, iconic)
+                if state == 'zoomed':
+                    window.state('zoomed')
+                elif state == 'iconic':
+                    window.state('iconic')
+                else:
+                    window.state('normal')
+                
+                logger.debug(f"Ripristinata geometria finestra {window_name}: {geometry}, state={state}")
+            else:
+                # Usa geometria default
+                window.geometry(default_geometry)
+                logger.debug(f"Usata geometria default per finestra {window_name}: {default_geometry}")
+        except Exception as e:
+            logger.error(f"Errore ripristino geometria finestra {window_name}: {e}")
+            window.geometry(default_geometry)
+    
+    def bind_window_save(self, window_name, window):
+        """Bind evento Configure per salvare automaticamente geometria"""
+        # Usa debouncing per evitare troppi salvataggi durante resize
+        def debounced_save(event):
+            # Salva solo se l'evento è sulla finestra principale, non sui widget figli
+            if event.widget == window:
+                if hasattr(window, '_save_timer'):
+                    window.after_cancel(window._save_timer)
+                # Salva il riferimento window direttamente invece di catturare event
+                window._save_timer = window.after(500, lambda: self.save_window_geometry(window_name, window))
+        
+        window.bind('<Configure>', debounced_save)
 
 
 # ==============================================================================
@@ -673,18 +879,15 @@ class QRCodeWindow:
         
         self.window = tk.Toplevel(parent)
         self.window.title("🔗 Accesso Web - La Comanda")
-        
-        # Carica configurazione
-        config = self.config_manager.get_window_config('qr_window')
-        width = int(config.get('width', 400))
-        height = int(config.get('height', 500))
-        x = int(config.get('x', 100))
-        y = int(config.get('y', 100))
-        
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
         self.window.configure(bg=COLORS['background'])
         
+        # Ripristina geometria salvata
+        self.config_manager.restore_window_geometry('qr_window', self.window, "400x500+100+100")
+        
         self.setup_ui()
+        
+        # Bind per salvare automaticamente su resize/move
+        self.config_manager.bind_window_save('qr_window', self.window)
         
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -776,12 +979,7 @@ class QRCodeWindow:
     
     def on_close(self):
         """Salva configurazione al chiudere"""
-        self.config_manager.save_window_config('qr_window', {
-            'x': self.window.winfo_x(),
-            'y': self.window.winfo_y(),
-            'width': self.window.winfo_width(),
-            'height': self.window.winfo_height()
-        })
+        self.config_manager.save_window_geometry('qr_window', self.window)
         self.window.destroy()
 
 
@@ -801,17 +999,14 @@ class AdminConsole:
         self.window = tk.Toplevel(parent)
         self.window.title("👨‍💼 Console Amministrazione - La Comanda")
         
-        # Carica configurazione
-        config = self.config_manager.get_window_config('admin_console')
-        width = int(config.get('width', 1400))
-        height = int(config.get('height', 900))
-        x = int(config.get('x', 50))
-        y = int(config.get('y', 50))
-        
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
+        # Ripristina geometria salvata
+        self.config_manager.restore_window_geometry('admin_console', self.window, "1400x900+50+50")
         
         self.setup_ui()
         self.refresh_orders()
+        
+        # Bind per salvare automaticamente su resize/move
+        self.config_manager.bind_window_save('admin_console', self.window)
         
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1618,12 +1813,7 @@ DETTAGLIO ORDINE
     
     def on_close(self):
         """Salva configurazione al chiudere"""
-        self.config_manager.save_window_config('admin_console', {
-            'x': self.window.winfo_x(),
-            'y': self.window.winfo_y(),
-            'width': self.window.winfo_width(),
-            'height': self.window.winfo_height()
-        })
+        self.config_manager.save_window_geometry('admin_console', self.window)
         self.window.destroy()
 
 
@@ -1641,22 +1831,19 @@ class KitchenDisplay:
         
         self.window = tk.Toplevel(parent)
         self.window.title("👨‍🍳 Display Cucina - La Comanda")
-        
-        # Carica configurazione
-        config = self.config_manager.get_window_config('kitchen_display')
-        width = int(config.get('width', 1000))
-        height = int(config.get('height', 700))
-        x = int(config.get('x', 200))
-        y = int(config.get('y', 100))
-        
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
         self.window.configure(bg=COLORS['background'])
+        
+        # Ripristina geometria salvata
+        self.config_manager.restore_window_geometry('kitchen_display', self.window, "1000x700+200+100")
         
         self.setup_ui()
         self.refresh_display()
         
         # Auto-refresh ogni 5 secondi
         self.auto_refresh()
+        
+        # Bind per salvare automaticamente su resize/move
+        self.config_manager.bind_window_save('kitchen_display', self.window)
         
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1828,13 +2015,17 @@ class KitchenDisplay:
     
     def on_close(self):
         """Salva configurazione al chiudere"""
-        self.config_manager.save_window_config('kitchen_display', {
-            'x': self.window.winfo_x(),
-            'y': self.window.winfo_y(),
-            'width': self.window.winfo_width(),
-            'height': self.window.winfo_height(),
-            'splitter_positions': '300,600'  # TODO: salvare posizioni reali splitters
-        })
+        # Salva geometria finestra
+        self.config_manager.save_window_geometry('kitchen_display', self.window)
+        
+        # Salva posizioni splitter se disponibili
+        try:
+            if hasattr(self, 'paned'):
+                # TODO: Implementare salvataggio posizioni reali dei panes se necessario
+                pass
+        except Exception as e:
+            logger.error(f"Errore salvataggio posizioni splitter: {e}")
+        
         self.window.destroy()
 
 
@@ -1877,24 +2068,25 @@ class LaComanda:
         self.admin_console = AdminConsole(self.root, self.database, self.webapp.socketio, self.config_manager)
         self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager)
         
-        print(f"\n{'='*60}")
-        print(f"🍽️  LA COMANDA - SISTEMA AVVIATO")
-        print(f"{'='*60}")
-        print(f"🌐 URL Web: {self.ngrok_url}")
-        print(f"🏠 URL Locale: http://localhost:{PORT}/cameriere")
-        print(f"👨‍💼 Console Amministrazione: APERTA")
-        print(f"👨‍�� Display Cucina: APERTO")
-        print(f"📱 Finestra QR Code: APERTA")
-        print(f"{'='*60}\n")
+        logger.info("=" * 60)
+        logger.info("🍽️  LA COMANDA - SISTEMA AVVIATO")
+        logger.info("=" * 60)
+        logger.info(f"🌐 URL Web: {self.ngrok_url}")
+        logger.info(f"🏠 URL Locale: http://localhost:{PORT}/cameriere")
+        logger.info("👨‍💼 Console Amministrazione: APERTA")
+        logger.info("👨‍🍳 Display Cucina: APERTO")
+        logger.info("📱 Finestra QR Code: APERTA")
+        logger.info("=" * 60)
     
     def start_ngrok(self):
         """Avvia ngrok"""
         try:
             ngrok.set_auth_token(NGROK_TOKEN)
             public_url = ngrok.connect(PORT, bind_tls=True)
+            logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
             return public_url.public_url
         except Exception as e:
-            print(f"⚠️ Errore ngrok: {e}")
+            logger.warning(f"Errore ngrok: {e}. Utilizzo localhost.")
             return f"http://localhost:{PORT}"
     
     def run(self):
@@ -1907,12 +2099,12 @@ class LaComanda:
 # ==============================================================================
 
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("🍽️  LA COMANDA - Sistema di Gestione Ordini Ristorante")
-    print("   www.ivanlivemusic.com")
-    print("="*60 + "\n")
+    logger.info("\n" + "="*60)
+    logger.info("🍽️  LA COMANDA - Sistema di Gestione Ordini Ristorante")
+    logger.info("   www.ivanlivemusic.com")
+    logger.info("="*60 + "\n")
     
-    print("Inizializzazione...")
+    logger.info("Inizializzazione sistema...")
     
     app = LaComanda()
     app.run()
