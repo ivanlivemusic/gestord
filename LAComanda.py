@@ -2745,12 +2745,6 @@ DETTAGLIO ORDINE
             # TODO: Aprire StoricOrdersWindow con il database selezionato
             messagebox.showinfo("Info", f"Database selezionato: {filename}\n\nFunzionalità StoricOrdersWindow in sviluppo")
     
-    def storicizza_ordini(self):
-        """Storicizza ordini"""
-        if messagebox.askyesno("Conferma", "Storicizzare gli ordini completati?"):
-            # TODO: Implementare logica di storicizzazione
-            messagebox.showinfo("Info", "Funzionalità di storicizzazione in sviluppo")
-    
     def show_statistics(self):
         """Mostra statistiche"""
         messagebox.showinfo("📊 Statistiche", "Coming soon - Funzionalità in sviluppo")
@@ -3022,9 +3016,12 @@ DETTAGLIO ORDINE
         for item in self.kitchen_users_tree.get_children():
             self.kitchen_users_tree.delete(item)
         
-        # TODO: Implementare get_kitchen_users() nel database
-        # Per ora lista vuota
-        pass
+        kitchen_users = self.database.get_all_kitchen_users()
+        for user in kitchen_users:
+            self.kitchen_users_tree.insert('', 'end', iid=user['id'], values=(
+                user['id'], user['username'], user['full_name'],
+                '✅' if user['active'] else '❌'
+            ))
     
     def add_kitchen_user(self):
         """Aggiungi nuovo utente cucina"""
