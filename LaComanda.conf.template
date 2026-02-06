@@ -28,3 +28,8 @@ y = 200
 width = 500
 height = 600
 maximized = False
+
+[Ngrok]
+# Token di autenticazione Ngrok per accesso remoto
+# Ottieni il tuo token da: https://dashboard.ngrok.com/get-started/your-authtoken
+authtoken = 

@@ -59,11 +59,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# SECURITY NOTE: Set NGROK_AUTH_TOKEN environment variable for remote access
+# SECURITY NOTE: Ngrok auth token should be configured in LaComanda.conf [Ngrok] section
+# or set as NGROK_AUTH_TOKEN environment variable for remote access
 # Without this token, the system will only be accessible on local network
 # Get your token from: https://dashboard.ngrok.com/get-started/your-authtoken
 # DO NOT commit tokens to repository
-NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "")
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'la-comanda-secret-key-change-in-production')
 
 PORT = 5000
@@ -1197,6 +1197,9 @@ class ConfigManager:
             'email': 'info@lacomanda.it',
             'vat_number': 'IT12345678901',
             'website': 'www.ivanlivemusic.com'
+        }
+        self.config['Ngrok'] = {
+            'authtoken': ''
         }
         self.save_config()
     
@@ -2825,8 +2828,8 @@ DETTAGLIO ORDINE
     
     def save_window_prefs(self):
         """Salva preferenze finestre"""
-        self.config_manager.config['kitchen_display']['visible'] = str(self.kitchen_visible.get()).lower()
-        self.config_manager.config['qr_window']['visible'] = str(self.qr_visible.get()).lower()
+        self.config_manager.config['kitchen_display']['visible'] = 'true' if self.kitchen_visible.get() else 'false'
+        self.config_manager.config['qr_window']['visible'] = 'true' if self.qr_visible.get() else 'false'
         self.config_manager.save_config()
         messagebox.showinfo("✅ Successo", "Preferenze salvate")
     
@@ -3159,8 +3162,15 @@ class LaComanda:
         self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager)
         
         # Nascondi inizialmente kitchen display e QR window secondo configurazione
-        kitchen_visible = self.config_manager.config.get('kitchen_display', {}).get('visible', 'false') == 'true'
-        qr_visible = self.config_manager.config.get('qr_window', {}).get('visible', 'false') == 'true'
+        try:
+            kitchen_visible = self.config_manager.config.getboolean('kitchen_display', 'visible', fallback=False)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            kitchen_visible = False
+        
+        try:
+            qr_visible = self.config_manager.config.getboolean('qr_window', 'visible', fallback=False)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            qr_visible = False
         
         if not kitchen_visible:
             self.kitchen_display.window.withdraw()
@@ -3296,15 +3306,51 @@ class LaComanda:
             if migrated > 0:
                 logger.info(f"Migrati {migrated} ordini completati al database storico")
     
+    def setup_ngrok(self):
+        """Configura ngrok con token da configurazione"""
+        try:
+            token = self.config_manager.config.get('Ngrok', 'authtoken', fallback='')
+            
+            # Prova anche la variabile d'ambiente come fallback
+            if not token:
+                token = os.environ.get('NGROK_AUTH_TOKEN', '')
+            
+            if token:
+                # Prova prima con subprocess per configurare token persistentemente
+                try:
+                    result = subprocess.run(
+                        ['ngrok', 'config', 'add-authtoken', token], 
+                        capture_output=True, 
+                        text=True, 
+                        check=True,
+                        timeout=10
+                    )
+                    logger.info("Ngrok token configurato correttamente via CLI")
+                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    # Se fallisce, usa l'API Python di pyngrok
+                    logger.debug(f"CLI ngrok non disponibile, uso pyngrok: {e}")
+                    ngrok.set_auth_token(token)
+                    logger.info("Ngrok token configurato correttamente via pyngrok")
+                
+                return token
+            else:
+                logger.warning("Token ngrok non trovato in LaComanda.conf o variabile d'ambiente")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Errore configurazione ngrok: {e}")
+            return None
+    
     def start_ngrok(self):
         """Avvia ngrok tunnel per accesso remoto"""
-        if not NGROK_TOKEN:
+        token = self.setup_ngrok()
+        
+        if not token:
             logger.warning("NGROK_AUTH_TOKEN non configurato. Il sistema funzionerà solo in localhost.")
-            logger.warning("Per accesso remoto, impostare la variabile d'ambiente NGROK_AUTH_TOKEN")
+            logger.warning("Per accesso remoto, configurare [Ngrok] authtoken in LaComanda.conf")
             return f"http://localhost:{PORT}"
         
         try:
-            ngrok.set_auth_token(NGROK_TOKEN)
             public_url = ngrok.connect(PORT, bind_tls=True)
             logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
             return public_url.public_url
