@@ -3943,7 +3943,8 @@ class LaComanda:
                     logger.info("Ngrok token configurato correttamente via CLI")
                 except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
                     # Se fallisce, usa l'API Python di pyngrok
-                    logger.debug(f"CLI ngrok non disponibile, uso pyngrok: {e}")
+                    stderr = getattr(e, 'stderr', '')
+                    logger.debug(f"CLI ngrok non disponibile ({e.__class__.__name__}), uso pyngrok. Stderr: {stderr}")
                     ngrok.set_auth_token(token)
                     logger.info("Ngrok token configurato correttamente via pyngrok")
                 
