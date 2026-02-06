@@ -28,6 +28,10 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import csv
 import webbrowser
+import shutil
+import platform
+import tempfile
+import glob
 
 # Flask imports
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
@@ -3035,6 +3039,200 @@ DETTAGLIO ORDINE
         self.config_manager.config['qr_window']['visible'] = 'true' if self.qr_visible.get() else 'false'
         self.config_manager.save_config()
         messagebox.showinfo("✅ Successo", "Preferenze salvate")
+    
+    def storicizza_ordini(self):
+        """Archive current orders_history.db file"""
+        try:
+            history_db = 'orders_history.db'
+            
+            # Check if orders_history.db exists
+            if not os.path.exists(history_db):
+                messagebox.showwarning("⚠️ Attenzione", "File orders_history.db non trovato")
+                return
+            
+            # Show confirmation dialog
+            result = messagebox.askyesno("📦 Storicizza Ordini", 
+                                        "Vuoi archiviare il database orders_history.db?\n\n"
+                                        "Verrà rinominato con la data dell'ultimo ordine\n"
+                                        "e verrà creato un nuovo database vuoto.")
+            if not result:
+                return
+            
+            # Get last order date from database
+            conn = sqlite3.connect(history_db)
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(timestamp) FROM orders")
+            last_date = cursor.fetchone()[0]
+            
+            if last_date:
+                # Extract date from timestamp (format: YYYY-MM-DD HH:MM:SS or similar)
+                date_str = last_date.split()[0] if ' ' in last_date else last_date[:10]
+            else:
+                # No orders, use current date
+                date_str = datetime.now().strftime('%Y-%m-%d')
+            
+            # Close connection
+            conn.close()
+            
+            # Create new filename
+            new_filename = f'orders_history_{date_str}.db'
+            
+            # Check if destination file already exists
+            if os.path.exists(new_filename):
+                counter = 1
+                while os.path.exists(f'orders_history_{date_str}_{counter}.db'):
+                    counter += 1
+                new_filename = f'orders_history_{date_str}_{counter}.db'
+            
+            # Rename the file
+            os.rename(history_db, new_filename)
+            logger.info(f"Archived orders_history.db to {new_filename}")
+            
+            # Create new empty orders_history.db with same schema
+            conn = sqlite3.connect(history_db)
+            cursor = conn.cursor()
+            
+            # Get schema from the archived database
+            old_conn = sqlite3.connect(new_filename)
+            old_cursor = old_conn.cursor()
+            old_cursor.execute("SELECT sql FROM sqlite_master WHERE type='table'")
+            tables_sql = old_cursor.fetchall()
+            old_conn.close()
+            
+            # Create tables in new database
+            for sql_tuple in tables_sql:
+                if sql_tuple[0]:
+                    cursor.execute(sql_tuple[0])
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Created new empty orders_history.db")
+            messagebox.showinfo("✅ Successo", 
+                              f"Database archiviato come:\n{new_filename}\n\n"
+                              f"Nuovo database orders_history.db creato")
+            
+        except Exception as e:
+            logger.error(f"Error archiving orders_history.db: {e}")
+            messagebox.showerror("❌ Errore", f"Errore durante l'archiviazione:\n{str(e)}")
+    
+    def backup_now(self):
+        """Manual backup function"""
+        try:
+            # Create backups directory with today's date
+            today = datetime.now().strftime('%Y-%m-%d')
+            backup_dir = os.path.join('backups', today)
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%H%M%S')
+            
+            # Files to backup
+            files_to_backup = [
+                ('orders.db', f'orders_{today}_{timestamp}.db'),
+                ('orders_history.db', f'orders_history_{today}_{timestamp}.db'),
+                ('menu.csv', f'menu_{today}_{timestamp}.csv')
+            ]
+            
+            backed_up = []
+            for source, dest in files_to_backup:
+                if os.path.exists(source):
+                    dest_path = os.path.join(backup_dir, dest)
+                    shutil.copy2(source, dest_path)
+                    backed_up.append(dest)
+                    logger.info(f"Backed up {source} to {dest_path}")
+            
+            if backed_up:
+                messagebox.showinfo("✅ Successo", 
+                                  f"Backup completato!\n\n"
+                                  f"Location: {backup_dir}\n\n"
+                                  f"Files:\n" + "\n".join([f"• {f}" for f in backed_up]))
+            else:
+                messagebox.showwarning("⚠️ Attenzione", "Nessun file da backuppare trovato")
+            
+        except Exception as e:
+            logger.error(f"Error creating backup: {e}")
+            messagebox.showerror("❌ Errore", f"Errore durante il backup:\n{str(e)}")
+    
+    def print_receipt(self, receipt_text):
+        """Print receipt function"""
+        temp_file = None
+        try:
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
+                f.write(receipt_text)
+                temp_file = f.name
+            
+            logger.info(f"Created temp receipt file: {temp_file}")
+            
+            # Platform-specific print command
+            system = platform.system()
+            
+            if system == 'Windows':
+                os.startfile(temp_file, 'print')
+                logger.info("Sent to printer using Windows startfile")
+            elif system == 'Darwin':  # macOS
+                subprocess.run(['lpr', temp_file], check=True)
+                logger.info("Sent to printer using lpr (macOS)")
+            else:  # Linux
+                subprocess.run(['lp', temp_file], check=True)
+                logger.info("Sent to printer using lp (Linux)")
+            
+            messagebox.showinfo("✅ Successo", "Scontrino inviato alla stampante")
+            
+            # Schedule file deletion after 5 seconds
+            def delete_temp_file():
+                time.sleep(5)
+                try:
+                    if temp_file and os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                        logger.info(f"Deleted temp file: {temp_file}")
+                except Exception as e:
+                    logger.error(f"Error deleting temp file: {e}")
+            
+            threading.Thread(target=delete_temp_file, daemon=True).start()
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Print command failed: {e}")
+            messagebox.showerror("❌ Errore", 
+                               f"Errore durante la stampa.\n"
+                               f"Verifica che la stampante sia configurata.")
+        except Exception as e:
+            logger.error(f"Error printing receipt: {e}")
+            messagebox.showerror("❌ Errore", f"Errore durante la stampa:\n{str(e)}")
+            # Cleanup on error
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
+    
+    def get_all_order_databases(self):
+        """Get list of all order databases"""
+        try:
+            databases = []
+            
+            # Add main orders.db if it exists
+            if os.path.exists('orders.db'):
+                databases.append('orders.db')
+            
+            # Find all orders_history*.db files
+            history_files = glob.glob('orders_history*.db')
+            
+            # Filter out any files in backups/ subdirectory
+            for db_file in history_files:
+                # Exclude if path contains 'backups' directory
+                if 'backups' not in os.path.dirname(os.path.abspath(db_file)):
+                    databases.append(db_file)
+            
+            # Sort the list
+            databases.sort()
+            
+            logger.info(f"Found {len(databases)} order databases: {databases}")
+            return databases
+            
+        except Exception as e:
+            logger.error(f"Error getting order databases: {e}")
+            return []
     
     def on_close(self):
         """Salva configurazione al chiudere"""
