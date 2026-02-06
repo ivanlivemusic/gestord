@@ -2866,7 +2866,7 @@ class KitchenDisplay:
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
     def setup_ui(self):
-        """Setup UI con splitters"""
+        """Setup UI con 3 colonne + REMINDER"""
         # Header
         header = tk.Frame(self.window, bg=COLORS['primary'], height=70)
         header.pack(fill='x')
@@ -2880,55 +2880,62 @@ class KitchenDisplay:
         self.clock_label.pack(side='right', padx=30)
         self.update_clock()
         
-        # PanedWindow per splitters
-        config = self.config_manager.get_window_config('kitchen_display')
-        splitter_pos = config.get('splitter_positions', '300,600').split(',')
-        
+        # PanedWindow per 4 colonne
         self.paned = ttk.PanedWindow(self.window, orient='horizontal')
         self.paned.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # 3 colonne: Inserito, Preparato, In Consegna
+        # 4 colonne: INSERITO (CD), PREPARATO (CD), REMINDER (🔥), IN_CONSEGNA (CI+CD)
         self.columns = {}
-        states = ['inserito', 'preparato', 'in_consegna']
-        titles = ['📝 INSERITO', '🍳 PREPARATO', '🚚 IN CONSEGNA']
-        colors = [COLORS['state_inserito'], COLORS['state_preparato'], COLORS['state_in_consegna']]
         
-        for i, (state, title, color) in enumerate(zip(states, titles, colors)):
-            frame = tk.Frame(self.paned, bg=COLORS['background'], relief='solid', borderwidth=2)
-            
-            # Header colonna
-            header_col = tk.Frame(frame, bg=color, height=50)
-            header_col.pack(fill='x')
-            header_col.pack_propagate(False)
-            
-            tk.Label(header_col, text=title, font=('Arial', 16, 'bold'),
-                    bg=color, fg='white').pack(pady=12)
-            
-            # Scrolled frame per ordini
-            canvas = tk.Canvas(frame, bg=COLORS['background'], highlightthickness=0)
-            scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
-            scrollable_frame = tk.Frame(canvas, bg=COLORS['background'])
-            
-            scrollable_frame.bind(
-                "<Configure>",
-                lambda e, c=canvas: c.configure(scrollregion=c.bbox("all"))
-            )
-            
-            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-            canvas.configure(yscrollcommand=scrollbar.set)
-            
-            canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-            
-            self.columns[state] = {
-                'frame': scrollable_frame,
-                'color': color
-            }
-            
-            self.paned.add(frame, weight=1)
+        # Colonna 1: INSERITO (solo CD items)
+        self.create_column('inserito', '📝 INSERITO', COLORS['state_inserito'])
+        
+        # Colonna 2: PREPARATO (solo CD items)
+        self.create_column('preparato', '🍳 PREPARATO', COLORS['state_preparato'])
+        
+        # Colonna 3: REMINDER 🔥 (items con reminder)
+        self.create_column('reminder', '🔥 REMINDER', '#FF4500')
+        
+        # Colonna 4: CONSEGNATO (CI items pronti)
+        self.create_column('consegnato', '✅ DA CONSEGNARE', COLORS['state_consegnato'])
+    
+    def create_column(self, state, title, color):
+        """Crea una colonna del display"""
+        frame = tk.Frame(self.paned, bg=COLORS['background'], relief='solid', borderwidth=2)
+        
+        # Header colonna
+        header_col = tk.Frame(frame, bg=color, height=50)
+        header_col.pack(fill='x')
+        header_col.pack_propagate(False)
+        
+        tk.Label(header_col, text=title, font=('Arial', 14, 'bold'),
+                bg=color, fg='white').pack(pady=12)
+        
+        # Scrolled frame per ordini
+        canvas = tk.Canvas(frame, bg=COLORS['background'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=COLORS['background'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e, c=canvas: c.configure(scrollregion=c.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        self.columns[state] = {
+            'frame': scrollable_frame,
+            'color': color
+        }
+        
+        self.paned.add(frame, weight=1)
     
     def refresh_display(self):
-        """Aggiorna display ordini"""
+        """Aggiorna display ordini con logica CI/CD e reminder"""
         # Pulisci colonne
         for state_data in self.columns.values():
             for widget in state_data['frame'].winfo_children():
@@ -2936,83 +2943,147 @@ class KitchenDisplay:
         
         # Carica ordini
         orders = self.database.get_all_orders()
+        now = datetime.now()
         
-        # Organizza per stato
+        # Organizza ordini
         for order in orders:
             state = order['status']
+            tipo = order.get('tipo_consegna', 'CD')
             
-            # Mostra solo i 3 stati (escludi pagato)
-            if state not in ['inserito', 'preparato', 'in_consegna']:
+            # Escludi ordini pagati
+            if state == 'pagato':
                 continue
             
-            if state not in self.columns:
-                continue
-            
-            # Card ordine
-            card = tk.Frame(self.columns[state]['frame'], bg='white',
-                          relief='raised', borderwidth=2)
-            card.pack(fill='x', padx=10, pady=8)
-            
-            # Header card
-            header_card = tk.Frame(card, bg=self.columns[state]['color'])
-            header_card.pack(fill='x')
-            
-            tk.Label(header_card, text=f"Ordine #{order['id']} - Tavolo {order['table_number']}",
-                    font=('Arial', 14, 'bold'), bg=self.columns[state]['color'],
-                    fg='white').pack(side='left', padx=15, pady=8)
-            
-            # Ora
+            # Calcola tempo trascorso per reminder
             try:
-                dt = datetime.fromisoformat(order['timestamp'])
-                time_str = dt.strftime('%H:%M')
+                order_time = datetime.fromisoformat(order['timestamp'])
+                elapsed_minutes = (now - order_time).total_seconds() / 60
             except:
-                time_str = order['timestamp'][:5]
+                elapsed_minutes = 0
             
-            tk.Label(header_card, text=f"🕐 {time_str}",
-                    font=('Arial', 11), bg=self.columns[state]['color'],
-                    fg='white').pack(side='right', padx=15)
+            # Determina icona reminder
+            reminder_icon = ''
+            if tipo == 'CD' and state == 'inserito' and elapsed_minutes >= 25:
+                reminder_icon = REMINDER_ICONS['urgent']
+            elif tipo == 'CD' and state == 'inserito' and elapsed_minutes >= 20:
+                reminder_icon = REMINDER_ICONS['warning']
+            elif tipo == 'CD' and state == 'preparato' and elapsed_minutes >= 5:
+                reminder_icon = REMINDER_ICONS['warning']
+            elif tipo == 'CI' and elapsed_minutes >= 10:
+                reminder_icon = REMINDER_ICONS['warning']
             
-            # Items
-            items_frame = tk.Frame(card, bg='white')
-            items_frame.pack(fill='both', expand=True, padx=15, pady=10)
+            # Posizionamento ordini
+            target_column = None
             
-            for item in order['items']:
-                item_frame = tk.Frame(items_frame, bg='white')
-                item_frame.pack(fill='x', pady=3)
-                
-                tk.Label(item_frame, text=f"• {item['menu_item_name']}",
-                        font=('Arial', 12), bg='white', anchor='w').pack(side='left')
-                
-                tk.Label(item_frame, text=f"x{item['quantity']}",
-                        font=('Arial', 12, 'bold'), bg='white').pack(side='right')
+            if reminder_icon:
+                # Ordine con reminder va in colonna REMINDER
+                target_column = 'reminder'
+            elif tipo == 'CD' and state == 'inserito':
+                target_column = 'inserito'
+            elif tipo == 'CD' and state == 'preparato':
+                target_column = 'preparato'
+            elif tipo == 'CI' or state in ['in_consegna', 'consegnato']:
+                target_column = 'consegnato'
             
-            # Note
-            if order.get('notes'):
-                notes_frame = tk.Frame(card, bg='#FFF9E6')
-                notes_frame.pack(fill='x', padx=15, pady=(0, 10))
-                
-                tk.Label(notes_frame, text=f"📝 Note: {order['notes']}",
-                        font=('Arial', 10), bg='#FFF9E6', fg='#856404',
-                        wraplength=250, justify='left').pack(pady=5, padx=10)
+            if target_column and target_column in self.columns:
+                self.render_order_card(order, target_column, reminder_icon)
+    
+    def render_order_card(self, order, column, reminder_icon=''):
+        """Renderizza card ordine"""
+        frame = self.columns[column]['frame']
+        color = self.columns[column]['color']
+        
+        # Card
+        card = tk.Frame(frame, bg='white', relief='raised', borderwidth=2)
+        card.pack(fill='x', padx=10, pady=10)
+        
+        # Header card
+        header = tk.Frame(card, bg=color, height=50)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        # Info ordine
+        info_frame = tk.Frame(header, bg=color)
+        info_frame.pack(side='left', fill='both', expand=True)
+        
+        tk.Label(info_frame, text=f"🏷️ Ordine #{order['id']}", font=('Arial', 14, 'bold'),
+                bg=color, fg='white').pack(anchor='w', padx=15, pady=2)
+        
+        tk.Label(info_frame, text=f"🪑 Tavolo {order['table_number']} | 👥 {order['num_people']} pers.",
+                font=('Arial', 11), bg=color, fg='white').pack(anchor='w', padx=15, pady=2)
+        
+        # Reminder icon se presente
+        if reminder_icon:
+            tk.Label(header, text=reminder_icon, font=('Arial', 28),
+                    bg=color).pack(side='right', padx=15)
+        
+        # Tempo
+        try:
+            dt = datetime.fromisoformat(order['timestamp'])
+            time_str = dt.strftime('%H:%M')
+            elapsed = (datetime.now() - dt).total_seconds() / 60
+            elapsed_str = f"{int(elapsed)}'"
+        except:
+            time_str = order['timestamp'][:5] if len(order['timestamp']) > 5 else order['timestamp']
+            elapsed_str = "?"
+        
+        tk.Label(header, text=f"🕐 {time_str}\n({elapsed_str})",
+                font=('Arial', 10), bg=color, fg='white').pack(side='right', padx=15)
+        
+        # Items
+        items_frame = tk.Frame(card, bg='white')
+        items_frame.pack(fill='x', padx=15, pady=10)
+        
+        for item in order['items']:
+            item_tipo = item.get('tipo', 'CD')
+            tipo_badge = '🔴 CI' if item_tipo == 'CI' else '🟢 CD'
             
-            # Bottoni azione
-            btn_frame = tk.Frame(card, bg='white')
-            btn_frame.pack(fill='x', padx=15, pady=(0, 10))
+            item_frame = tk.Frame(items_frame, bg='white')
+            item_frame.pack(fill='x', pady=3)
             
+            tk.Label(item_frame, text=tipo_badge, font=('Arial', 9),
+                    bg='white').pack(side='left', padx=(0, 5))
+            
+            tk.Label(item_frame, text=f"{item['menu_item_name']}",
+                    font=('Arial', 12), bg='white', anchor='w').pack(side='left')
+            
+            tk.Label(item_frame, text=f"x{item['quantity']}",
+                    font=('Arial', 12, 'bold'), bg='white').pack(side='right')
+        
+        # Note
+        if order.get('notes'):
+            notes_frame = tk.Frame(card, bg='#FFF9E6')
+            notes_frame.pack(fill='x', padx=15, pady=(0, 10))
+            
+            tk.Label(notes_frame, text=f"📝 {order['notes']}",
+                    font=('Arial', 10), bg='#FFF9E6', fg='#856404',
+                    wraplength=250, justify='left').pack(pady=5, padx=10)
+        
+        # Bottoni azione
+        btn_frame = tk.Frame(card, bg='white')
+        btn_frame.pack(fill='x', padx=15, pady=(0, 10))
+        
+        state = order['status']
+        
+        if column == 'inserito':
+            tk.Button(btn_frame, text="✅ Preparato", bg=COLORS['accent'], fg='white',
+                     font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
+                     command=lambda: self.change_status(order['id'], 'preparato')).pack()
+        elif column == 'preparato':
+            tk.Button(btn_frame, text="🚚 Pronto", bg=COLORS['accent'], fg='white',
+                     font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
+                     command=lambda: self.change_status(order['id'], 'in_consegna')).pack()
+        elif column == 'reminder':
+            # Mostra azioni basate sullo stato reale
             if state == 'inserito':
-                next_state = 'preparato'
-                btn_text = "✅ Segna Preparato"
-            elif state == 'preparato':
-                next_state = 'in_consegna'
-                btn_text = "🚚 In Consegna"
-            else:
-                next_state = None
-                btn_text = None
-            
-            if next_state:
-                tk.Button(btn_frame, text=btn_text, bg=COLORS['accent'], fg='white',
+                tk.Button(btn_frame, text="✅ Preparato", bg='#FF4500', fg='white',
                          font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                         command=lambda oid=order['id'], ns=next_state: self.change_status(oid, ns)).pack()
+                         command=lambda: self.change_status(order['id'], 'preparato')).pack()
+            elif state == 'preparato':
+                tk.Button(btn_frame, text="🚚 Pronto", bg='#FF4500', fg='white',
+                         font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
+                         command=lambda: self.change_status(order['id'], 'in_consegna')).pack()
+
     
     def change_status(self, order_id, new_status):
         """Cambia stato ordine"""
