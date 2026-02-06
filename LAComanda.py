@@ -59,8 +59,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# SECURITY NOTE: For production, MUST set NGROK_AUTH_TOKEN environment variable
-# DO NOT commit tokens to repository - this default is for local development only
+# SECURITY NOTE: Set NGROK_AUTH_TOKEN environment variable for remote access
+# Without this token, the system will only be accessible on local network
+# Get your token from: https://dashboard.ngrok.com/get-started/your-authtoken
+# DO NOT commit tokens to repository
 NGROK_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', "")
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'la-comanda-secret-key-change-in-production')
 
@@ -707,8 +709,10 @@ class Database:
         waiter = cursor.fetchone()
         conn.close()
         if waiter:
+            logger.info(f"Authentication successful using waiters table: {username}")
             return dict(waiter)
-        # Fallback su users per compatibilità
+        # Fallback su users per compatibilità (DEPRECATED)
+        logger.warning(f"Falling back to users table for: {username} - Consider migrating to waiters table")
         return self.verify_user(username, password)
     
     def get_all_waiters(self):
