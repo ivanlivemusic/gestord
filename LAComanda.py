@@ -104,6 +104,18 @@ REMINDER_ICONS = {
     'urgent': '🔥'
 }
 
+# Icone allergeni
+ALLERGENI_ICONS = {
+    'glutine': '🌾',
+    'lattosio': '🥛',
+    'uova': '🥚',
+    'frutta_secca': '🥜',
+    'pesce': '🐟',
+    'crostacei': '🦐',
+    'soia': '🫘',
+    'sedano': '🥬'
+}
+
 # Icone categorie
 CATEGORY_ICONS = {
     'Antipasti': '🥗',
@@ -446,7 +458,7 @@ class Database:
         return None
     
     def load_menu_from_csv(self, csv_path=MENU_CSV):
-        """Carica menu da CSV con supporto tipo CI/CD"""
+        """Carica menu da CSV con supporto tipo CI/CD, allergeni e note dietetiche"""
         if not os.path.exists(csv_path):
             return False
         
@@ -459,11 +471,14 @@ class Database:
             reader = csv.DictReader(f)
             for row in reader:
                 tipo = row.get('Tipo', 'CD')  # Default CD se non specificato
+                allergeni = row.get('Allergeni', '')
+                note_dietetiche = row.get('Note_Dietetiche', '')
+                
                 cursor.execute(
-                    """INSERT INTO menu_items (categoria, sottocategoria, nome, prezzo, descrizione, tipo)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO menu_items (categoria, sottocategoria, nome, prezzo, descrizione, tipo, allergeni, note_dietetiche)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (row['Categoria'], row.get('Sottocategoria'), row['Nome'],
-                     float(row['Prezzo']), row.get('Descrizione'), tipo)
+                     float(row['Prezzo']), row.get('Descrizione'), tipo, allergeni, note_dietetiche)
                 )
         
         conn.commit()

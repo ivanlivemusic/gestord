@@ -1,55 +1,55 @@
-Categoria,Sottocategoria,Nome,Prezzo,Descrizione,Tipo
-Antipasti,,Bruschetta al Pomodoro,6.50,Pane tostato con pomodori freschi e basilico,CD
-Antipasti,,Prosciutto e Melone,8.00,Prosciutto crudo con melone fresco,CD
-Antipasti,,Antipasto Misto,12.00,Selezione di salumi e formaggi locali,CD
-Antipasti,,Caprese,7.50,Mozzarella di bufala con pomodori e basilico,CD
-Primi,Carne,Lasagne alla Bolognese,10.00,Lasagne fatte in casa con ragù di carne,CD
-Primi,Carne,Tagliatelle al Ragù,9.50,Pasta fresca con ragù tradizionale,CD
-Primi,Carne,Pappardelle al Cinghiale,12.00,Pasta larga con sugo di cinghiale,CD
-Primi,Pesce,Spaghetti alle Vongole,11.00,Spaghetti con vongole fresche,CD
-Primi,Pesce,Risotto ai Frutti di Mare,13.00,Risotto cremoso con frutti di mare misti,CD
-Primi,Pesce,Linguine allo Scoglio,14.00,Linguine con crostacei e molluschi,CD
-Primi,,Pasta al Pomodoro,7.00,Pasta con pomodoro fresco e basilico,CD
-Secondi,Carne,Bistecca alla Fiorentina,25.00,Bistecca di manzo alla griglia (400g),CD
-Secondi,Carne,Tagliata di Manzo,18.00,Manzo tagliato con rucola e grana,CD
-Secondi,Carne,Pollo alla Griglia,12.00,Petto di pollo marinato e grigliato,CD
-Secondi,Carne,Ossobuco alla Milanese,16.00,Ossobuco con risotto alla milanese,CD
-Secondi,Pesce,Branzino al Forno,16.00,Branzino intero al forno con patate,CD
-Secondi,Pesce,Grigliata Mista di Pesce,22.00,Selezione di pesce fresco alla griglia,CD
-Secondi,Pesce,Salmone alla Griglia,15.00,Filetto di salmone con verdure,CD
-Contorni,,Insalata Mista,4.50,Insalata fresca di stagione,CD
-Contorni,,Patate al Forno,4.00,Patate arrosto con rosmarino,CD
-Contorni,,Verdure Grigliate,5.50,Mix di verdure grigliate,CD
-Contorni,,Spinaci Saltati,4.50,Spinaci freschi saltati in padella,CD
-Dolci,,Tiramisù,6.00,Tiramisù fatto in casa,CD
-Dolci,,Panna Cotta,5.50,Panna cotta con frutti di bosco,CD
-Dolci,,Torta della Nonna,5.00,Torta tradizionale con crema e pinoli,CD
-Dolci,,Gelato Artigianale,4.50,Gelato fatto in casa (2 gusti),CD
-Pizzeria,,Margherita,7.00,Pomodoro mozzarella e basilico,CD
-Pizzeria,,Diavola,8.50,Pomodoro mozzarella e salame piccante,CD
-Pizzeria,,Quattro Stagioni,9.00,Pomodoro mozzarella funghi prosciutto carciofi olive,CD
-Pizzeria,,Capricciosa,9.00,Pomodoro mozzarella funghi prosciutto carciofi,CD
-Pizzeria,,Quattro Formaggi,9.50,Quattro formaggi senza pomodoro,CD
-Pizzeria,,Prosciutto e Funghi,8.50,Pomodoro mozzarella prosciutto e funghi,CD
-Bevande,Bibite,Acqua Naturale (1L),2.00,Acqua minerale naturale,CI
-Bevande,Bibite,Acqua Frizzante (1L),2.00,Acqua minerale frizzante,CI
-Bevande,Bibite,Coca Cola,3.00,Coca Cola 33cl,CI
-Bevande,Bibite,Aranciata,3.00,Aranciata 33cl,CI
-Bevande,Bibite,Succo di Frutta,3.50,Succhi vari 20cl,CI
-Bevande,Alcolici,Vino Rosso (Bottiglia),15.00,Vino rosso della casa,CI
-Bevande,Alcolici,Vino Bianco (Bottiglia),15.00,Vino bianco della casa,CI
-Bevande,Alcolici,Prosecco (Bottiglia),18.00,Prosecco DOC,CI
-Bevande,Alcolici,Birra alla Spina (Media),4.50,Birra chiara 40cl,CI
-Bevande,Alcolici,Birra alla Spina (Grande),6.00,Birra chiara 60cl,CI
-Vegetariani,,Melanzane alla Parmigiana,9.00,Melanzane con pomodoro e mozzarella,CD
-Vegetariani,,Risotto ai Funghi Porcini,11.00,Risotto cremoso con funghi porcini,CD
-Vegetariani,,Pizza Vegetariana,9.00,Pomodoro mozzarella e verdure grigliate,CD
-Vegani,,Pasta al Pomodoro e Basilico,7.50,Pasta con pomodoro fresco (senza formaggi),CD
-Vegani,,Verdure al Vapore,6.00,Mix di verdure al vapore,CD
-Vegani,,Insalata Vegana,7.00,Insalata mista con semi e olio EVO,CD
-Caffetteria,,Caffè Espresso,1.50,Caffè espresso,CI
-Caffetteria,,Cappuccino,2.50,Cappuccino italiano,CI
-Caffetteria,,Caffè Macchiato,1.80,Caffè macchiato,CI
-Caffetteria,,Caffè Americano,2.00,Caffè americano,CI
-Caffetteria,,Tè,2.50,Tè caldo (varie qualità),CI
-Caffetteria,,Caffè Corretto,3.00,Caffè con grappa o sambuca,CI
+Categoria,Sottocategoria,Nome,Prezzo,Descrizione,Tipo,Allergeni,Note_Dietetiche
+Antipasti,,Bruschetta al Pomodoro,6.50,Pane tostato con pomodori freschi e basilico,CD,glutine,vegetariano
+Antipasti,,Prosciutto e Melone,8.00,Prosciutto crudo con melone fresco,CD,,
+Antipasti,,Antipasto Misto,12.00,Selezione di salumi e formaggi locali,CD,lattosio,
+Antipasti,,Caprese,7.50,Mozzarella di bufala con pomodori e basilico,CD,lattosio,vegetariano
+Primi,Carne,Lasagne alla Bolognese,10.00,Lasagne fatte in casa con ragù di carne,CD,"glutine,lattosio,uova",
+Primi,Carne,Tagliatelle al Ragù,9.50,Pasta fresca con ragù tradizionale,CD,"glutine,uova",
+Primi,Carne,Pappardelle al Cinghiale,12.00,Pasta larga con sugo di cinghiale,CD,"glutine,uova",
+Primi,Pesce,Spaghetti alle Vongole,11.00,Spaghetti con vongole fresche,CD,"glutine,pesce",
+Primi,Pesce,Risotto ai Frutti di Mare,13.00,Risotto cremoso con frutti di mare misti,CD,"pesce,lattosio",
+Primi,Pesce,Linguine allo Scoglio,14.00,Linguine con crostacei e molluschi,CD,"glutine,pesce,crostacei",
+Primi,,Pasta al Pomodoro,7.00,Pasta con pomodoro fresco e basilico,CD,glutine,vegetariano
+Secondi,Carne,Bistecca alla Fiorentina,25.00,Bistecca di manzo alla griglia (400g),CD,,
+Secondi,Carne,Tagliata di Manzo,18.00,Manzo tagliato con rucola e grana,CD,lattosio,
+Secondi,Carne,Pollo alla Griglia,12.00,Petto di pollo marinato e grigliato,CD,,
+Secondi,Carne,Ossobuco alla Milanese,16.00,Ossobuco con risotto alla milanese,CD,lattosio,
+Secondi,Pesce,Branzino al Forno,16.00,Branzino intero al forno con patate,CD,pesce,
+Secondi,Pesce,Grigliata Mista di Pesce,22.00,Selezione di pesce fresco alla griglia,CD,pesce,
+Secondi,Pesce,Salmone alla Griglia,15.00,Filetto di salmone con verdure,CD,pesce,
+Contorni,,Insalata Mista,4.50,Insalata fresca di stagione,CD,,vegetariano,vegano
+Contorni,,Patate al Forno,4.00,Patate arrosto con rosmarino,CD,,vegetariano,vegano
+Contorni,,Verdure Grigliate,5.50,Mix di verdure grigliate,CD,,vegetariano,vegano
+Contorni,,Spinaci Saltati,4.50,Spinaci freschi saltati in padella,CD,,vegetariano,vegano
+Dolci,,Tiramisù,6.00,Tiramisù fatto in casa,CD,"glutine,lattosio,uova",vegetariano
+Dolci,,Panna Cotta,5.50,Panna cotta con frutti di bosco,CD,lattosio,vegetariano
+Dolci,,Torta della Nonna,5.00,Torta tradizionale con crema e pinoli,CD,"glutine,lattosio,uova,frutta_secca",vegetariano
+Dolci,,Gelato Artigianale,4.50,Gelato fatto in casa (2 gusti),CD,lattosio,vegetariano
+Pizzeria,,Margherita,7.00,Pomodoro mozzarella e basilico,CD,"glutine,lattosio",vegetariano
+Pizzeria,,Diavola,8.50,Pomodoro mozzarella e salame piccante,CD,"glutine,lattosio",
+Pizzeria,,Quattro Stagioni,9.00,Pomodoro mozzarella funghi prosciutto carciofi olive,CD,"glutine,lattosio",
+Pizzeria,,Capricciosa,9.00,Pomodoro mozzarella funghi prosciutto carciofi,CD,"glutine,lattosio",
+Pizzeria,,Quattro Formaggi,9.50,Quattro formaggi senza pomodoro,CD,"glutine,lattosio",vegetariano
+Pizzeria,,Prosciutto e Funghi,8.50,Pomodoro mozzarella prosciutto e funghi,CD,"glutine,lattosio",
+Bevande,Bibite,Acqua Naturale (1L),2.00,Acqua minerale naturale,CI,,vegano
+Bevande,Bibite,Acqua Frizzante (1L),2.00,Acqua minerale frizzante,CI,,vegano
+Bevande,Bibite,Coca Cola,3.00,Coca Cola 33cl,CI,,vegano
+Bevande,Bibite,Aranciata,3.00,Aranciata 33cl,CI,,vegano
+Bevande,Bibite,Succo di Frutta,3.50,Succhi vari 20cl,CI,,vegano
+Bevande,Alcolici,Vino Rosso (Bottiglia),15.00,Vino rosso della casa,CI,,vegano
+Bevande,Alcolici,Vino Bianco (Bottiglia),15.00,Vino bianco della casa,CI,,vegano
+Bevande,Alcolici,Prosecco (Bottiglia),18.00,Prosecco DOC,CI,,vegano
+Bevande,Alcolici,Birra alla Spina (Media),4.50,Birra chiara 40cl,CI,"glutine",vegano
+Bevande,Alcolici,Birra alla Spina (Grande),6.00,Birra chiara 60cl,CI,"glutine",vegano
+Vegetariani,,Melanzane alla Parmigiana,9.00,Melanzane con pomodoro e mozzarella,CD,"lattosio,glutine",vegetariano
+Vegetariani,,Risotto ai Funghi Porcini,11.00,Risotto cremoso con funghi porcini,CD,lattosio,vegetariano
+Vegetariani,,Pizza Vegetariana,9.00,Pomodoro mozzarella e verdure grigliate,CD,"glutine,lattosio",vegetariano
+Vegani,,Pasta al Pomodoro e Basilico,7.50,Pasta con pomodoro fresco (senza formaggi),CD,glutine,vegano
+Vegani,,Verdure al Vapore,6.00,Mix di verdure al vapore,CD,,vegano
+Vegani,,Insalata Vegana,7.00,Insalata mista con semi e olio EVO,CD,,vegano
+Caffetteria,,Caffè Espresso,1.50,Caffè espresso,CI,,vegano
+Caffetteria,,Cappuccino,2.50,Cappuccino italiano,CI,lattosio,vegetariano
+Caffetteria,,Caffè Macchiato,1.80,Caffè macchiato,CI,lattosio,vegetariano
+Caffetteria,,Caffè Americano,2.00,Caffè americano,CI,,vegano
+Caffetteria,,Tè,2.50,Tè caldo (varie qualità),CI,,vegano
+Caffetteria,,Caffè Corretto,3.00,Caffè con grappa o sambuca,CI,,vegano
