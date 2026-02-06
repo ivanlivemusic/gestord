@@ -4078,7 +4078,7 @@ DETTAGLIO ORDINE
             import random
             from datetime import timedelta
             
-            # Test waiters
+            # Test waiters (NOTE: These are TEST CREDENTIALS ONLY - NOT FOR PRODUCTION)
             test_waiters = [
                 ('mario.rossi', 'password123', 'Mario Rossi'),
                 ('luca.bianchi', 'password123', 'Luca Bianchi'),
@@ -4372,9 +4372,16 @@ class StatisticsWindow:
                 ax.set_title('Incasso Giornaliero')
                 ax.grid(True, alpha=0.3)
                 
-                # Rotate x-labels for readability
-                ax.set_xticks(range(0, len(dates), max(1, len(dates)//10)))
-                ax.set_xticklabels([dates[i] for i in range(0, len(dates), max(1, len(dates)//10))], rotation=45)
+                # Rotate x-labels for readability - show up to 10 labels evenly spaced
+                if len(dates) > 0:
+                    # Calculate step to show approximately 10 labels
+                    step = max(1, len(dates) // 10)
+                    indices = list(range(0, len(dates), step))
+                    # Always include the last date
+                    if len(dates) - 1 not in indices:
+                        indices.append(len(dates) - 1)
+                    ax.set_xticks(indices)
+                    ax.set_xticklabels([dates[i] for i in indices], rotation=45)
                 
                 fig.tight_layout()
                 
