@@ -370,6 +370,18 @@ class Database:
                 cursor.execute("ALTER TABLE orders ADD COLUMN items_variants TEXT")
                 conn.commit()
             
+            if 'prepared_timestamp' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN prepared_timestamp TEXT")
+                conn.commit()
+            
+            if 'prepared_reminder_sent' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN prepared_reminder_sent INTEGER DEFAULT 0")
+                conn.commit()
+            
+            if 'needs_kitchen_reminder' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN needs_kitchen_reminder INTEGER DEFAULT 0")
+                conn.commit()
+            
             # Verifica colonne tabella menu_items
             cursor.execute("PRAGMA table_info(menu_items)")
             menu_columns = {row[1] for row in cursor.fetchall()}
@@ -697,6 +709,130 @@ class Database:
         )
         conn.commit()
         conn.close()
+    
+    def mark_reminder_sent(self, order_id):
+        """Mark reminder as sent for order"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET reminder_sent = 1, reminder_timestamp = ?
+            WHERE id = ?
+        """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        conn.commit()
+        conn.close()
+    
+    def mark_needs_kitchen_reminder(self, order_id, needs=True):
+        """Mark order as needing kitchen reminder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET needs_kitchen_reminder = ?
+            WHERE id = ?
+        """, (1 if needs else 0, order_id))
+        conn.commit()
+        conn.close()
+    
+    def set_prepared_timestamp(self, order_id, timestamp):
+        """Set timestamp when order was marked as prepared"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET prepared_timestamp = ?
+            WHERE id = ?
+        """, (timestamp.strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        conn.commit()
+        conn.close()
+    
+    def mark_prepared_reminder_sent(self, order_id):
+        """Mark prepared reminder as sent"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET prepared_reminder_sent = 1
+            WHERE id = ?
+        """, (order_id,))
+        conn.commit()
+        conn.close()
+    
+    def get_ready_orders_for_waiter(self, waiter_name):
+        """Get orders ready for pickup for specific waiter"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT o.*, 
+                   CAST((julianday('now') - julianday(o.prepared_timestamp)) * 24 * 60 AS INTEGER) as minutes_ready
+            FROM orders o
+            WHERE o.waiter_name = ?
+            AND o.status = 'preparato'
+            AND o.prepared_timestamp IS NOT NULL
+            ORDER BY o.prepared_timestamp ASC
+        """, (waiter_name,))
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order_dict = dict(order)
+            # Get items
+            cursor.execute("""
+                SELECT menu_item_name as name, quantity, price
+                FROM order_items
+                WHERE order_id = ?
+            """, (order['id'],))
+            order_dict['items'] = [dict(row) for row in cursor.fetchall()]
+            result.append(order_dict)
+        
+        conn.close()
+        return result
+    
+    def get_orders_for_kitchen_display(self):
+        """Get orders for kitchen display divided by column"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT o.*,
+                   CASE 
+                       WHEN o.needs_kitchen_reminder = 1 THEN 'reminder'
+                       WHEN o.status = 'preparato' THEN 'preparato'
+                       ELSE 'inserito'
+                   END as display_column
+            FROM orders o
+            WHERE EXISTS (
+                SELECT 1 FROM order_items oi 
+                WHERE oi.order_id = o.id AND oi.tipo = 'CD'
+            )
+            AND (o.order_type = 'normal' OR o.order_type IS NULL)
+            AND o.status IN ('inserito', 'preparato')
+            ORDER BY o.timestamp ASC
+        """)
+        orders = cursor.fetchall()
+        
+        inserito = []
+        preparato = []
+        reminder = []
+        
+        for order in orders:
+            order_dict = dict(order)
+            # Get CD items only
+            cursor.execute("""
+                SELECT menu_item_name as nome, quantity, tipo
+                FROM order_items
+                WHERE order_id = ? AND tipo = 'CD'
+            """, (order['id'],))
+            order_dict['items'] = [dict(row) for row in cursor.fetchall()]
+            
+            if order['display_column'] == 'inserito':
+                inserito.append(order_dict)
+            elif order['display_column'] == 'preparato':
+                preparato.append(order_dict)
+            else:  # reminder
+                reminder.append(order_dict)
+        
+        conn.close()
+        return {'inserito': inserito, 'preparato': preparato, 'reminder': reminder}
     
     def get_orders_for_kitchen(self):
         """Get orders for kitchen display - only CD with order_type='normal'"""
