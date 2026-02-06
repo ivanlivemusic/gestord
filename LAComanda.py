@@ -3179,9 +3179,9 @@ DETTAGLIO ORDINE
             
             messagebox.showinfo("✅ Successo", "Scontrino inviato alla stampante")
             
-            # Schedule file deletion after 5 seconds
+            # Schedule file deletion after 30 seconds to ensure print completes
             def delete_temp_file():
-                time.sleep(5)
+                time.sleep(30)
                 try:
                     if temp_file and os.path.exists(temp_file):
                         os.unlink(temp_file)
@@ -3203,8 +3203,9 @@ DETTAGLIO ORDINE
             if temp_file and os.path.exists(temp_file):
                 try:
                     os.unlink(temp_file)
-                except:
-                    pass
+                except Exception as e:
+                    # Log but don't fail - temp file will be cleaned up by OS eventually
+                    logger.warning(f"Could not delete temp file on error: {e}")
     
     def get_all_order_databases(self):
         """Get list of all order databases"""
@@ -3220,8 +3221,9 @@ DETTAGLIO ORDINE
             
             # Filter out any files in backups/ subdirectory
             for db_file in history_files:
-                # Exclude if path contains 'backups' directory
-                if 'backups' not in os.path.dirname(os.path.abspath(db_file)):
+                # Exclude if path contains 'backups' directory component
+                path_parts = os.path.normpath(db_file).split(os.sep)
+                if 'backups' not in path_parts:
                     databases.append(db_file)
             
             # Sort the list
