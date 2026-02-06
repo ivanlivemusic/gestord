@@ -7,6 +7,11 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         :root {
+            --bg-color: #FFFFFF;
+            --text-color: #333333;
+            --card-bg: #F5F5F5;
+            --input-bg: #FFFFFF;
+            --border-color: #DDDDDD;
             --primary-color: #2C3E50;
             --secondary-color: #3498DB;
             --accent-color: #2ECC71;
@@ -15,6 +20,16 @@
             --inserito: #FFA500;
             --preparato: #4A90E2;
             --in-consegna: #50C878;
+        }
+
+        [data-theme="dark"] {
+            --bg-color: #1a1a1a;
+            --text-color: #E0E0E0;
+            --card-bg: #2d2d2d;
+            --input-bg: #3a3a3a;
+            --border-color: #444444;
+            --background: #1a1a1a;
+            --white: #2d2d2d;
         }
         
         * {
@@ -28,15 +43,38 @@
             background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
             min-height: 100vh;
             padding: 20px;
+            color: var(--text-color);
+        }
+        
+        [data-theme="dark"] body {
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
         }
         
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background: white;
+            background: var(--bg-color);
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             overflow: hidden;
+        }
+        
+        #theme-toggle {
+            position: fixed;
+            top: 30px;
+            right: 30px;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.15);
+            font-size: 24px;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+        
+        #theme-toggle:hover {
+            background: rgba(255,255,255,0.25);
         }
         
         .header {
@@ -70,8 +108,8 @@
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 20px;
             padding: 30px;
-            background: #f8f9fa;
-            border-bottom: 2px solid #e9ecef;
+            background: var(--card-bg);
+            border-bottom: 2px solid var(--border-color);
         }
         
         .info-field {
@@ -90,10 +128,12 @@
         .info-field select,
         .info-field textarea {
             padding: 12px;
-            border: 2px solid #dee2e6;
+            border: 2px solid var(--border-color);
             border-radius: 8px;
             font-size: 1em;
             transition: all 0.3s;
+            background-color: var(--input-bg);
+            color: var(--text-color);
         }
         
         .info-field input:focus,
@@ -102,6 +142,68 @@
             outline: none;
             border-color: var(--secondary-color);
             box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+        }
+        
+        /* Order Type Radio Buttons */
+        .order-type-section {
+            padding: 20px 30px;
+            background: var(--bg-color);
+            border-bottom: 2px solid var(--border-color);
+        }
+        
+        .order-type-section h3 {
+            font-size: 1.1em;
+            color: #495057;
+            margin-bottom: 15px;
+        }
+        
+        .order-type-options {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 15px;
+        }
+        
+        .order-type-radio {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        
+        .order-type-radio input[type="radio"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        
+        .order-type-radio label {
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .rapid-sub-options {
+            display: none;
+            margin-left: 28px;
+            margin-top: 10px;
+            gap: 15px;
+        }
+        
+        .rapid-sub-options.visible {
+            display: flex;
+        }
+        
+        .pickup-info {
+            display: none;
+            margin-top: 15px;
+            padding: 10px;
+            background: #e7f5ff;
+            border-left: 4px solid var(--secondary-color);
+            border-radius: 5px;
+            color: #495057;
+        }
+        
+        .pickup-info.visible {
+            display: block;
         }
         
         /* Search Bar */
@@ -146,14 +248,21 @@
             padding: 30px;
             max-height: 600px;
             overflow-y: auto;
+            background-color: var(--bg-color);
         }
         
         .category {
             margin-bottom: 25px;
-            border: 2px solid #e9ecef;
+            border: 2px solid var(--border-color);
             border-radius: 15px;
             overflow: hidden;
-            background: white;
+            background: var(--card-bg);
+        }
+        
+        .menu-item {
+            background: var(--input-bg);
+            border: 2px solid var(--border-color);
+            color: var(--text-color);
         }
         
         .category-header {
@@ -420,6 +529,10 @@
     </style>
 </head>
 <body>
+    <button id="theme-toggle">
+        <span class="theme-icon">🌙</span>
+    </button>
+    
     <div class="container">
         <div class="header">
             <h1>🍽️ La Comanda</h1>
@@ -441,6 +554,38 @@
             <div class="info-field">
                 <label>📝 Note Ordine</label>
                 <textarea id="orderNotes" rows="2" placeholder="Allergie, preferenze..."></textarea>
+            </div>
+        </div>
+        
+        <!-- Order Type Selection -->
+        <div class="order-type-section">
+            <h3>Tipo Ordine</h3>
+            <div class="order-type-options">
+                <div class="order-type-radio">
+                    <input type="radio" id="orderTypeNormal" name="orderType" value="normal" checked>
+                    <label for="orderTypeNormal">🍽️ Normale</label>
+                </div>
+                <div class="order-type-radio">
+                    <input type="radio" id="orderTypeRapid" name="orderType" value="rapid">
+                    <label for="orderTypeRapid">⚡ Coperto Rapido</label>
+                </div>
+            </div>
+            
+            <!-- Rapid sub-options -->
+            <div class="rapid-sub-options" id="rapidSubOptions">
+                <div class="order-type-radio">
+                    <input type="radio" id="rapidTypeBanco" name="rapidType" value="banco" checked>
+                    <label for="rapidTypeBanco">🚀 Banco</label>
+                </div>
+                <div class="order-type-radio">
+                    <input type="radio" id="rapidTypeTakeaway" name="rapidType" value="takeaway">
+                    <label for="rapidTypeTakeaway">📦 Da Asporto</label>
+                </div>
+            </div>
+            
+            <!-- Pickup number info -->
+            <div class="pickup-info" id="pickupInfo">
+                <strong>Numero Ritiro:</strong> Verrà generato automaticamente
             </div>
         </div>
         
@@ -497,6 +642,37 @@
     <script>
         const cart = {};
         const socket = io();
+        
+        // Order Type handling
+        const orderTypeRadios = document.querySelectorAll('input[name="orderType"]');
+        const rapidSubOptions = document.getElementById('rapidSubOptions');
+        const pickupInfo = document.getElementById('pickupInfo');
+        const tableNumberField = document.getElementById('tableNumber');
+        const numPeopleField = document.getElementById('numPeople');
+        const tableLabel = tableNumberField.closest('.info-field').querySelector('label');
+        const peopleLabel = numPeopleField.closest('.info-field').querySelector('label');
+        
+        orderTypeRadios.forEach(radio => {
+            radio.addEventListener('change', function() {
+                if (this.value === 'rapid') {
+                    rapidSubOptions.classList.add('visible');
+                    pickupInfo.classList.add('visible');
+                    // Make table and people optional for rapid orders
+                    tableNumberField.removeAttribute('required');
+                    numPeopleField.removeAttribute('required');
+                    tableLabel.innerHTML = '🪑 Numero Tavolo (opzionale)';
+                    peopleLabel.innerHTML = '👥 Numero Persone (opzionale)';
+                } else {
+                    rapidSubOptions.classList.remove('visible');
+                    pickupInfo.classList.remove('visible');
+                    // Make table and people required for normal orders
+                    tableNumberField.setAttribute('required', 'required');
+                    numPeopleField.setAttribute('required', 'required');
+                    tableLabel.innerHTML = '🪑 Numero Tavolo *';
+                    peopleLabel.innerHTML = '👥 Numero Persone *';
+                }
+            });
+        });
         
         // Search functionality
         document.getElementById('searchInput').addEventListener('input', function(e) {
@@ -577,10 +753,21 @@
             const tableNumber = document.getElementById('tableNumber').value;
             const numPeople = document.getElementById('numPeople').value;
             const notes = document.getElementById('orderNotes').value;
+            const orderType = document.querySelector('input[name="orderType"]:checked').value;
             
-            if (!tableNumber || !numPeople) {
-                showNotification('⚠️ Compila tavolo e numero persone!', '#E74C3C');
-                return;
+            // Determine actual order type (rapid or takeaway)
+            let actualOrderType = orderType;
+            if (orderType === 'rapid') {
+                const rapidType = document.querySelector('input[name="rapidType"]:checked').value;
+                actualOrderType = rapidType === 'takeaway' ? 'takeaway' : 'rapid';
+            }
+            
+            // Validation based on order type
+            if (actualOrderType === 'normal') {
+                if (!tableNumber || !numPeople) {
+                    showNotification('⚠️ Compila tavolo e numero persone per ordini normali!', '#E74C3C');
+                    return;
+                }
             }
             
             if (Object.keys(cart).length === 0) {
@@ -589,14 +776,15 @@
             }
             
             const orderData = {
-                table_number: parseInt(tableNumber),
-                num_people: parseInt(numPeople),
+                table_number: parseInt(tableNumber) || 0,
+                num_people: parseInt(numPeople) || 1,
                 notes: notes,
+                order_type: actualOrderType,
                 items: Object.values(cart)
             };
             
             try {
-                const response = await fetch('/api/orders', {
+                const response = await fetch('/lacomanda/api/orders', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -607,7 +795,11 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    showNotification(`✅ Ordine #${result.order_id} inviato con successo!`, '#2ECC71');
+                    let message = `✅ Ordine #${result.order_id} inviato con successo!`;
+                    if (result.pickup_number) {
+                        message += ` - Numero Ritiro: ${result.pickup_number}`;
+                    }
+                    showNotification(message, '#2ECC71');
                     
                     // Reset form
                     Object.keys(cart).forEach(id => {
@@ -620,7 +812,7 @@
                     document.getElementById('numPeople').value = '';
                     document.getElementById('orderNotes').value = '';
                 } else {
-                    showNotification('❌ Errore nell\'invio dell\'ordine', '#E74C3C');
+                    showNotification(`❌ Errore: ${result.error || 'Errore nell\'invio'}`, '#E74C3C');
                 }
             } catch (error) {
                 showNotification('❌ Errore di connessione', '#E74C3C');
@@ -655,6 +847,21 @@
             const categories = document.querySelectorAll('.category');
             categories.forEach(cat => cat.classList.add('collapsed'));
         });
+        
+        // Theme management
+        const savedTheme = localStorage.getItem('lacomanda_theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        document.getElementById('theme-toggle').addEventListener('click', function() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('lacomanda_theme', newTheme);
+            this.querySelector('.theme-icon').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+        });
+
+        // Set initial icon
+        document.querySelector('.theme-icon').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
     </script>
 </body>
 </html>

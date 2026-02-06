@@ -80,6 +80,9 @@ MENU_CSV = 'menu.csv'
 # Stati ordini
 ORDER_STATES = ['inserito', 'preparato', 'in_consegna', 'consegnato', 'pagato']
 
+# Table number for rapid/takeaway orders without assigned table
+RAPID_TAKEAWAY_TABLE_PLACEHOLDER = 0
+
 # Colori moderni - AGGIORNATI secondo specifiche
 COLORS = {
     'primary': '#2C3E50',
@@ -552,18 +555,30 @@ class Database:
         conn.commit()
         conn.close()
     
-    def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes=""):
-        """Crea nuovo ordine con gestione errori"""
+    def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes="", order_type="normal"):
+        """Crea nuovo ordine con gestione errori e supporto per order_type (normal/rapid/takeaway)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
             timestamp = datetime.now().isoformat()
             
+            # Generate pickup_number for rapid/takeaway orders
+            pickup_number = None
+            if order_type in ['rapid', 'takeaway']:
+                # Get max pickup_number for today
+                today = datetime.now().date().isoformat()
+                cursor.execute(
+                    "SELECT MAX(pickup_number) FROM orders WHERE date(timestamp) = ? AND order_type IN ('rapid', 'takeaway')",
+                    (today,)
+                )
+                max_pickup = cursor.fetchone()[0]
+                pickup_number = (max_pickup or 0) + 1
+            
             cursor.execute(
-                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'inserito')""",
-                (table_number, num_people, waiter_id, waiter_name, timestamp, notes)
+                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status, order_type, pickup_number)
+                   VALUES (?, ?, ?, ?, ?, ?, 'inserito', ?, ?)""",
+                (table_number, num_people, waiter_id, waiter_name, timestamp, notes, order_type, pickup_number)
             )
             
             order_id = cursor.lastrowid
@@ -577,7 +592,7 @@ class Database:
                 )
             
             conn.commit()
-            logger.info(f"Ordine {order_id} creato nel database")
+            logger.info(f"Ordine {order_id} creato nel database - Tipo: {order_type}, Pickup: {pickup_number}")
             return order_id
             
         except sqlite3.Error as e:
@@ -656,6 +671,10 @@ class Database:
         conn.close()
         return order_dict
     
+    def get_order(self, order_id):
+        """Alias per get_order_by_id"""
+        return self.get_order_by_id(order_id)
+    
     def update_order_status(self, order_id, status):
         """Aggiorna stato ordine"""
         if status not in ORDER_STATES:
@@ -678,6 +697,38 @@ class Database:
         )
         conn.commit()
         conn.close()
+    
+    def get_orders_for_kitchen(self):
+        """Get orders for kitchen display - only CD with order_type='normal'"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT o.*, 
+                GROUP_CONCAT(oi.menu_item_name || ' x' || oi.quantity, ', ') as items_summary
+            FROM orders o
+            LEFT JOIN order_items oi ON o.id = oi.order_id
+            WHERE oi.tipo = 'CD'
+            AND (o.order_type = 'normal' OR o.order_type IS NULL)
+            AND o.status IN ('inserito', 'preparato', 'in_consegna')
+            GROUP BY o.id
+            ORDER BY o.timestamp ASC
+        """)
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order_dict = dict(order)
+            # Get detailed items
+            cursor.execute("""
+                SELECT menu_item_name as nome, quantity, tipo
+                FROM order_items
+                WHERE order_id = ? AND tipo = 'CD'
+            """, (order['id'],))
+            order_dict['items'] = [dict(row) for row in cursor.fetchall()]
+            result.append(order_dict)
+        
+        conn.close()
+        return result
     
     def add_items_to_order(self, order_id, items):
         """Aggiungi items a ordine esistente"""
@@ -772,19 +823,35 @@ class Database:
             conn.close()
     
     def verify_waiter(self, username, password):
-        """Verifica credenziali cameriere"""
+        """Verifica credenziali cameriere con werkzeug password hashing"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        pwd_hash = self.hash_password(password)
         cursor.execute(
-            "SELECT id, username, full_name, active FROM waiters WHERE username = ? AND password = ? AND active = 1",
-            (username, pwd_hash)
+            "SELECT id, username, full_name, active, password FROM waiters WHERE username = ? AND active = 1",
+            (username,)
         )
         waiter = cursor.fetchone()
         conn.close()
+        
         if waiter:
-            logger.info(f"Authentication successful using waiters table: {username}")
-            return dict(waiter)
+            waiter_dict = dict(waiter)
+            stored_password = waiter_dict['password']
+            
+            # Try werkzeug check_password_hash first (new format)
+            if stored_password.startswith('pbkdf2:') or stored_password.startswith('scrypt:'):
+                if check_password_hash(stored_password, password):
+                    logger.info(f"Authentication successful using werkzeug hash: {username}")
+                    del waiter_dict['password']  # Remove password from return dict
+                    return waiter_dict
+            # Fallback to SHA256 for backward compatibility
+            elif stored_password == self.hash_password(password):
+                logger.warning(f"Authentication successful using legacy SHA256 hash: {username} - Consider migrating to werkzeug")
+                del waiter_dict['password']
+                return waiter_dict
+            
+            logger.warning(f"Password verification failed for waiter: {username}")
+            return None
+        
         # Fallback su users per compatibilità (DEPRECATED)
         logger.warning(f"Falling back to users table for: {username} - Consider migrating to waiters table")
         return self.verify_user(username, password)
@@ -1152,9 +1219,12 @@ class WebApp:
                 user = self.database.verify_waiter(username, password)
                 
                 if user:
+                    session['waiter_id'] = user['id']
+                    session['waiter_user'] = user['username']
+                    session['full_name'] = user['full_name']
+                    # Backward compatibility - TODO: Remove in v2.0
                     session['user_id'] = user['id']
                     session['username'] = user['username']
-                    session['full_name'] = user['full_name']
                     return redirect(url_for('cameriere'))
                 else:
                     return render_template('login.html', error='Credenziali non valide')
@@ -1220,7 +1290,8 @@ class WebApp:
         
         @self.app.route('/lacomanda/api/orders', methods=['POST'])
         def create_order():
-            if 'user_id' not in session:
+            # Check session for waiter authentication
+            if 'user_id' not in session and 'waiter_id' not in session:
                 logger.warning("Tentativo di creare ordine senza autenticazione")
                 return jsonify({'success': False, 'error': 'Non autenticato'}), 401
             
@@ -1237,11 +1308,21 @@ class WebApp:
                 num_people = data.get('num_people')
                 items = data.get('items', [])
                 notes = data.get('notes', '')
+                order_type = data.get('order_type', 'normal')  # normal, rapid, takeaway
                 
-                # Verifica campi obbligatori
-                if not table_number:
-                    logger.error("Numero tavolo mancante")
-                    return jsonify({'success': False, 'error': 'Numero tavolo mancante'}), 400
+                # Validate order_type
+                if order_type not in ['normal', 'rapid', 'takeaway']:
+                    logger.error(f"Tipo ordine non valido: {order_type}")
+                    return jsonify({'success': False, 'error': 'Tipo ordine non valido'}), 400
+                
+                # Validate table is required only for normal orders
+                if order_type == 'normal' and not table_number:
+                    logger.error("Numero tavolo mancante per ordine normale")
+                    return jsonify({'success': False, 'error': 'Numero tavolo richiesto per ordini normali'}), 400
+                
+                # For rapid/takeaway orders, table_number can be auto-generated or optional
+                if order_type in ['rapid', 'takeaway'] and not table_number:
+                    table_number = RAPID_TAKEAWAY_TABLE_PLACEHOLDER
                 
                 if not num_people:
                     logger.error("Numero persone mancante")
@@ -1251,27 +1332,48 @@ class WebApp:
                     logger.error("Nessun item nell'ordine")
                     return jsonify({'success': False, 'error': 'Ordine vuoto'}), 400
                 
-                # Crea ordine
+                # Get waiter info from session
+                waiter_id = session.get('waiter_id', session.get('user_id'))
+                waiter_name = session.get('full_name', 'Unknown')
+                
+                # Log warning if waiter_name is Unknown (indicates session issue)
+                if waiter_name == 'Unknown':
+                    safe_session = {k: v for k, v in session.items() if k not in ['password', 'token', 'secret']}
+                    logger.warning(f"Order creation with 'Unknown' waiter name - potential session issue. Session keys: {list(safe_session.keys())}")
+                
+                # Create order with order_type
                 order_id = self.database.create_order(
                     table_number,
                     num_people,
-                    session['user_id'],
-                    session['full_name'],
+                    waiter_id,
+                    waiter_name,
                     items,
-                    notes
+                    notes,
+                    order_type=order_type
                 )
                 
-                logger.info(f"Ordine creato con successo: ID={order_id}, Tavolo={table_number}, Cameriere={session['full_name']}")
+                logger.info(f"Ordine creato con successo: ID={order_id}, Tipo={order_type}, Tavolo={table_number}, Cameriere={waiter_name}")
                 
                 # Notifica via socketio
                 try:
-                    self.socketio.emit('new_order', {'order_id': order_id}, namespace='/')
+                    self.socketio.emit('new_order', {'order_id': order_id, 'order_type': order_type}, namespace='/')
                     logger.debug(f"Notifica SocketIO inviata per ordine {order_id}")
                 except Exception as socket_error:
                     logger.error(f"Errore invio notifica SocketIO: {socket_error}")
                     # Non fallire l'ordine se la notifica fallisce
                 
-                return jsonify({'success': True, 'order_id': order_id})
+                # Get pickup_number for rapid/takeaway orders
+                pickup_number = None
+                if order_type in ['rapid', 'takeaway']:
+                    order_info = self.database.get_order(order_id)
+                    pickup_number = order_info.get('pickup_number') if order_info else None
+                
+                return jsonify({
+                    'success': True, 
+                    'order_id': order_id,
+                    'order_type': order_type,
+                    'pickup_number': pickup_number
+                })
                 
             except KeyError as ke:
                 logger.error(f"Campo mancante nei dati ordine: {ke}")
@@ -1308,30 +1410,13 @@ class WebApp:
         
         @self.app.route('/lacomanda/api/orders/kitchen')
         def get_kitchen_orders():
-            """API per pannello cucina - ottieni ordini CD con status inserito/preparato/in_consegna"""
+            """API for kitchen panel - returns only CD orders with order_type='normal'"""
+            if 'kitchen_user_id' not in session:
+                return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+            
             try:
-                # Get orders with only relevant statuses for kitchen
-                orders = self.database.get_orders_by_status(['inserito', 'preparato', 'in_consegna'])
-                
-                # Filter and format orders for kitchen
-                kitchen_orders = []
-                for order in orders:
-                    # Skip rapid and takeaway orders (show only normal orders)
-                    if order.get('order_type', 'normal') != 'normal':
-                        continue
-                    
-                    # Get order items
-                    items = self.database.get_order_items(order['id'])
-                    
-                    # Filter only CD items
-                    cd_items = [item for item in items if item.get('tipo') == 'CD']
-                    
-                    # Only include orders with CD items
-                    if cd_items:
-                        order['items'] = cd_items
-                        kitchen_orders.append(order)
-                
-                return jsonify({'success': True, 'orders': kitchen_orders})
+                orders = self.database.get_orders_for_kitchen()
+                return jsonify({'success': True, 'orders': orders})
             except Exception as e:
                 logger.error(f"Error getting kitchen orders: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
@@ -1422,6 +1507,14 @@ class ConfigManager:
         }
         self.config['Ngrok'] = {
             'authtoken': ''
+        }
+        self.config['Reminders'] = {
+            'ci_timeout': '10',
+            'cd_timeout': '25',
+            'cd_prepared_timeout': '5',
+            'reminder_sound': 'true',
+            'auto_reminder_enabled': 'true',
+            'warning_threshold_percent': '0.8'
         }
         self.save_config()
     
@@ -1792,14 +1885,40 @@ class AdminConsole:
         self.socketio = socketio
         self.config_manager = config_manager
         
+        # QR window state tracking
+        self.qr_cameriere_window = None
+        self.qr_cucina_window = None
+        
         self.window = tk.Toplevel(parent)
         self.window.title("LA COMANDA - Console Amministrazione | www.ivanlivemusic.com")
         
         # Ripristina geometria salvata
         self.config_manager.restore_window_geometry('admin_console', self.window, "1400x900+50+50")
         
+        # Create menubar
+        self.menubar = tk.Menu(self.window)
+        self.window.config(menu=self.menubar)
+        
+        # Developer menu
+        dev_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="🔧 Sviluppatore", menu=dev_menu)
+        dev_menu.add_command(label="🎲 Genera Dati di Test", command=self.generate_test_data)
+        dev_menu.add_command(label="🗑️ Pulisci Dati Test", command=self.clean_test_data)
+        
+        # Setup Socket.IO client for real-time updates
+        try:
+            import socketio as sio_client_module
+            self.sio_client = sio_client_module.Client()
+            self.setup_socketio_client()
+        except Exception as e:
+            logger.warning(f"Socket.IO client setup failed: {e}. Using polling fallback.")
+            self.sio_client = None
+        
         self.setup_ui()
         self.refresh_orders()
+        
+        # Start auto-refresh timer
+        self.start_auto_refresh()
         
         # Bind per salvare automaticamente su resize/move
         self.config_manager.bind_window_save('admin_console', self.window)
@@ -1807,6 +1926,87 @@ class AdminConsole:
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
+    
+    def setup_socketio_client(self):
+        """Setup Socket.IO client for real-time updates"""
+        @self.sio_client.on('connect')
+        def on_connect():
+            logger.info("🟢 Real-time connection established")
+            self.update_connection_indicator('connected')
+        
+        @self.sio_client.on('disconnect')
+        def on_disconnect():
+            logger.warning("🔴 Real-time connection lost")
+            self.update_connection_indicator('disconnected')
+        
+        @self.sio_client.on('new_order')
+        def on_new_order(data):
+            logger.info(f"🔔 New order received: #{data.get('order_id')}")
+            self.window.after(0, self.refresh_orders)
+            self.window.after(0, lambda: self.show_notification(f"Nuovo ordine: Tavolo {data.get('table')}"))
+        
+        @self.sio_client.on('order_updated')
+        def on_order_updated(data):
+            logger.info(f"🔄 Order updated: #{data.get('order_id')}")
+            self.window.after(0, self.refresh_orders)
+        
+        @self.sio_client.on('order_status_changed')
+        def on_status_changed(data):
+            logger.info(f"📝 Order status changed: #{data.get('order_id')} -> {data.get('status')}")
+            self.window.after(0, self.refresh_orders)
+        
+        # Try to connect
+        try:
+            server_url = f'http://localhost:{PORT}'
+            self.sio_client.connect(server_url, wait_timeout=5)
+            logger.info("Socket.IO client connected successfully")
+        except Exception as e:
+            logger.warning(f"Could not connect Socket.IO: {e}. Using polling mode.")
+    
+    def update_connection_indicator(self, status):
+        """Update connection status indicator"""
+        if hasattr(self, 'connection_indicator'):
+            if status == 'connected':
+                self.connection_indicator.config(text="🟢 Real-time", fg='green')
+            elif status == 'polling':
+                self.connection_indicator.config(text="🟠 Polling", fg='orange')
+            else:
+                self.connection_indicator.config(text="🔴 Offline", fg='red')
+    
+    def show_notification(self, message):
+        """Show toast notification"""
+        try:
+            notif = tk.Toplevel(self.window)
+            notif.title("Notifica")
+            notif.geometry("300x100+{}+{}".format(
+                self.window.winfo_x() + self.window.winfo_width() - 320,
+                self.window.winfo_y() + self.window.winfo_height() - 120
+            ))
+            notif.attributes('-topmost', True)
+            
+            tk.Label(notif, text="🔔 " + message, font=('Arial', 12, 'bold')).pack(pady=20)
+            
+            # Auto-close after 3 seconds
+            notif.after(3000, notif.destroy)
+        except Exception as e:
+            logger.error(f"Error showing notification: {e}")
+    
+    def start_auto_refresh(self):
+        """Start auto-refresh timer as fallback"""
+        def auto_refresh():
+            if hasattr(self, 'sio_client') and self.sio_client and self.sio_client.connected:
+                # Real-time is working, no need to poll
+                self.update_connection_indicator('connected')
+            else:
+                # Use polling mode
+                self.update_connection_indicator('polling')
+                self.refresh_orders()
+            
+            # Schedule next refresh
+            self.window.after(5000, auto_refresh)  # 5 seconds
+        
+        # Start after 1 second delay
+        self.window.after(1000, auto_refresh)
     def setup_ui(self):
         """Setup UI completa"""
         # Notebook per tabs
@@ -1834,8 +2034,11 @@ class AdminConsole:
         # TAB 7: ORARI E CONFIGURAZIONE
         self.setup_config_tab()
         
-        # TAB 8: CONTROLLI FINESTRE
-        self.setup_windows_control_tab()
+        # TAB 8: REMINDER CONFIGURATION
+        self.setup_reminder_tab()
+        
+        # TAB 9: RECEIPT CONFIGURATION
+        self.setup_receipt_tab()
     
     def setup_orders_tab(self):
         """TAB Gestione Ordini"""
@@ -1876,6 +2079,21 @@ class AdminConsole:
         
         tk.Button(toolbar, text="💾 Backup Ora", bg=COLORS['primary'], fg='white',
                  command=self.backup_now, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="📱 QR Cameriere", bg='#4A90E2', fg='white',
+                 command=self.toggle_qr_cameriere, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="🍳 QR Cucina", bg='#FF6B35', fg='white',
+                 command=self.toggle_qr_cucina, **btn_style).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text="📊 Statistiche", bg="#9C27B0", fg="white",
+                 font=('Arial', 10, 'bold'), padx=15, pady=8,
+                 command=self.open_statistics_window).pack(side='left', padx=5)
+        
+        # Connection indicator
+        self.connection_indicator = tk.Label(toolbar, text="🟠 Connecting...", 
+                                             fg='orange', font=('Arial', 9, 'bold'))
+        self.connection_indicator.pack(side='right', padx=10)
         
         # Legenda stati
         legend_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -1934,6 +2152,9 @@ class AdminConsole:
         self.orders_tree.tag_configure('preparato', background=COLORS['state_preparato'])
         self.orders_tree.tag_configure('in_consegna', background=COLORS['state_in_consegna'])
         self.orders_tree.tag_configure('pagato', background=COLORS['state_pagato'])
+        # Order type colors
+        self.orders_tree.tag_configure('rapid', background='#E3F2FD')
+        self.orders_tree.tag_configure('takeaway', background='#FFF3E0')
         
         # Frame cambio stato
         status_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2086,7 +2307,7 @@ class AdminConsole:
         self.refresh_daily_menu()
     
     def refresh_orders(self):
-        """Aggiorna lista ordini"""
+        """Aggiorna lista ordini con supporto order_type e pickup_number"""
         # Pulisci tree
         for item in self.orders_tree.get_children():
             self.orders_tree.delete(item)
@@ -2121,13 +2342,30 @@ class AdminConsole:
             except:
                 time_str = order['timestamp'][:5] if len(order['timestamp']) > 5 else order['timestamp']
             
-            # Inserisci riga
-            tag = order['status']
-            if tag not in ['inserito', 'preparato', 'in_consegna', 'pagato']:
-                tag = 'even' if idx % 2 == 0 else 'odd'
+            # Determine tag based on order_type and status
+            order_type = order.get('order_type', 'normal')
+            pickup_number = order.get('pickup_number')
+            
+            # Add icon prefix for rapid/takeaway orders
+            table_display = str(order['table_number'])
+            if order_type == 'rapid':
+                table_display = f"🚀 {pickup_number or table_display}"
+            elif order_type == 'takeaway':
+                table_display = f"📦 {pickup_number or table_display}"
+            
+            # Determine tag: order_type takes precedence over status for coloring
+            if order_type == 'rapid':
+                tag = 'rapid'
+            elif order_type == 'takeaway':
+                tag = 'takeaway'
+            else:
+                # Use status-based coloring for normal orders
+                tag = order['status']
+                if tag not in ['inserito', 'preparato', 'in_consegna', 'pagato']:
+                    tag = 'even' if idx % 2 == 0 else 'odd'
             
             self.orders_tree.insert('', 'end', iid=order['id'],
-                                   values=(order['id'], order['table_number'], order['num_people'],
+                                   values=(order['id'], table_display, order['num_people'],
                                           order['waiter_name'], order['status'].replace('_', ' ').title(),
                                           time_str, dishes[:40] + '...' if len(dishes) > 40 else dishes,
                                           prices[:30] + '...' if len(prices) > 30 else prices,
@@ -2751,14 +2989,94 @@ DETTAGLIO ORDINE
         messagebox.showinfo("Info", "Funzionalità da implementare")
     
     def open_historic_database(self):
-        """Apri database storico"""
-        filename = filedialog.askopenfilename(
-            title="Seleziona Database Storico",
-            filetypes=[("Database files", "*.db"), ("All files", "*.*")]
-        )
-        if filename:
-            # TODO: Aprire StoricOrdersWindow con il database selezionato
-            messagebox.showinfo("Info", f"Database selezionato: {filename}\n\nFunzionalità StoricOrdersWindow in sviluppo")
+        """Open window to browse history databases"""
+        # Find all history databases
+        history_dbs = []
+        for file in os.listdir('.'):
+            if file.startswith('orders_history') and file.endswith('.db'):
+                history_dbs.append(file)
+        
+        if not history_dbs:
+            messagebox.showinfo("Info", "Nessun database storico trovato")
+            return
+        
+        # Create dialog
+        dialog = tk.Toplevel(self.window)
+        dialog.title("📂 Gestione Storico")
+        dialog.geometry("800x600")
+        
+        tk.Label(dialog, text="Seleziona Database Storico", font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # Listbox with databases
+        listbox = tk.Listbox(dialog, font=('Arial', 11), height=10)
+        listbox.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        for db in sorted(history_dbs, reverse=True):
+            listbox.insert('end', db)
+        
+        def open_selected():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("Attenzione", "Seleziona un database")
+                return
+            
+            db_name = listbox.get(selection[0])
+            self.show_history_orders(db_name)
+            dialog.destroy()
+        
+        tk.Button(dialog, text="📖 Apri", bg=COLORS['accent'], fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=8, 
+                  command=open_selected).pack(pady=10)
+    
+    def show_history_orders(self, db_name):
+        """Show orders from history database"""
+        try:
+            from database import Database
+            hist_db = Database(db_name)
+            
+            # Create window
+            hist_window = tk.Toplevel(self.window)
+            hist_window.title(f"📖 Storico - {db_name}")
+            hist_window.geometry("1000x600")
+            
+            tk.Label(hist_window, text=f"Ordini Storici: {db_name}", 
+                    font=('Arial', 14, 'bold')).pack(pady=10)
+            
+            # Tree view
+            tree = ttk.Treeview(hist_window, columns=('ID', 'Tavolo', 'Cameriere', 'Data', 'Totale', 'Stato'),
+                               show='headings', height=20)
+            
+            tree.heading('ID', text='ID')
+            tree.heading('Tavolo', text='Tavolo')
+            tree.heading('Cameriere', text='Cameriere')
+            tree.heading('Data', text='Data')
+            tree.heading('Totale', text='Totale')
+            tree.heading('Stato', text='Stato')
+            
+            tree.column('ID', width=50)
+            tree.column('Tavolo', width=80)
+            tree.column('Cameriere', width=150)
+            tree.column('Data', width=200)
+            tree.column('Totale', width=100)
+            tree.column('Stato', width=100)
+            
+            tree.pack(fill='both', expand=True, padx=20, pady=10)
+            
+            # Load orders
+            conn = hist_db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, table_number, waiter_name, timestamp, total, status FROM orders ORDER BY timestamp DESC")
+            
+            for order in cursor.fetchall():
+                tree.insert('', 'end', values=order)
+            
+            conn.close()
+            
+            tk.Button(hist_window, text="❌ Chiudi", command=hist_window.destroy).pack(pady=10)
+            
+        except Exception as e:
+            logger.error(f"Error opening history: {e}")
+            messagebox.showerror("Errore", f"Errore apertura storico: {e}")
     
     def show_statistics(self):
         """Mostra statistiche"""
@@ -3040,15 +3358,135 @@ DETTAGLIO ORDINE
     
     def add_kitchen_user(self):
         """Aggiungi nuovo utente cucina"""
-        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+        dialog = tk.Toplevel(self.window)
+        dialog.title("Aggiungi Utente Cucina")
+        dialog.geometry("400x300")
+        dialog.configure(bg=COLORS['background'])
+        
+        tk.Label(dialog, text="➕ Aggiungi Utente Cucina", font=('Arial', 16, 'bold'),
+                bg=COLORS['background']).pack(pady=20)
+        
+        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame.pack(padx=30, pady=10, fill='both', expand=True)
+        
+        fields = {}
+        labels = ['Username', 'Password', 'Nome Completo']
+        
+        for label in labels:
+            tk.Label(frame, text=f"{label}:", font=('Arial', 11),
+                    bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
+            if label == 'Password':
+                entry = tk.Entry(frame, font=('Arial', 11), width=30, show='*')
+            else:
+                entry = tk.Entry(frame, font=('Arial', 11), width=30)
+            entry.pack(fill='x', pady=5)
+            fields[label] = entry
+        
+        def save():
+            username = fields['Username'].get().strip()
+            password = fields['Password'].get()
+            full_name = fields['Nome Completo'].get().strip()
+            
+            if not username or not password or not full_name:
+                messagebox.showwarning("Attenzione", "Compila tutti i campi")
+                return
+            
+            try:
+                if self.database.add_kitchen_user(username, password, full_name):
+                    messagebox.showinfo("✅ Successo", "Utente cucina aggiunto")
+                    dialog.destroy()
+                    self.refresh_kitchen_users()
+                else:
+                    messagebox.showerror("Errore", "Username già esistente")
+            except Exception as e:
+                messagebox.showerror("Errore", f"Errore durante l'aggiunta: {str(e)}")
+        
+        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+                 font=('Arial', 11, 'bold'), command=save, relief='flat',
+                 padx=20, pady=8).pack(pady=20)
     
     def edit_kitchen_user(self):
         """Modifica utente cucina"""
-        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+        selection = self.kitchen_users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Attenzione", "Seleziona un utente")
+            return
+        
+        user_id = int(selection[0])
+        values = self.kitchen_users_tree.item(user_id)['values']
+        
+        dialog = tk.Toplevel(self.window)
+        dialog.title("Modifica Utente Cucina")
+        dialog.geometry("400x320")
+        dialog.configure(bg=COLORS['background'])
+        
+        tk.Label(dialog, text="✏️ Modifica Utente Cucina", font=('Arial', 16, 'bold'),
+                bg=COLORS['background']).pack(pady=20)
+        
+        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame.pack(padx=30, pady=10, fill='both', expand=True)
+        
+        # Nome Completo
+        tk.Label(frame, text="Nome Completo:", font=('Arial', 11),
+                bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
+        full_name_entry = tk.Entry(frame, font=('Arial', 11), width=30)
+        full_name_entry.pack(fill='x', pady=5)
+        full_name_entry.insert(0, values[2])
+        
+        # Attivo
+        active_var = tk.BooleanVar(value=(values[3] == '✅'))
+        tk.Checkbutton(frame, text="Utente Attivo", variable=active_var,
+                      font=('Arial', 11), bg=COLORS['background']).pack(anchor='w', pady=10)
+        
+        # Nuova Password (opzionale)
+        tk.Label(frame, text="Nuova Password (lascia vuoto per non modificare):", 
+                font=('Arial', 11), bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
+        password_entry = tk.Entry(frame, font=('Arial', 11), width=30, show='*')
+        password_entry.pack(fill='x', pady=5)
+        
+        def save():
+            full_name = full_name_entry.get().strip()
+            active = 1 if active_var.get() else 0
+            new_password = password_entry.get()
+            
+            if not full_name:
+                messagebox.showwarning("Attenzione", "Nome completo è richiesto")
+                return
+            
+            try:
+                self.database.update_kitchen_user(user_id, full_name, active)
+                if new_password:
+                    self.database.change_kitchen_user_password(user_id, new_password)
+                messagebox.showinfo("✅ Successo", "Utente cucina modificato")
+                dialog.destroy()
+                self.refresh_kitchen_users()
+            except Exception as e:
+                messagebox.showerror("Errore", f"Errore durante la modifica: {str(e)}")
+        
+        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+                 font=('Arial', 11, 'bold'), command=save, relief='flat',
+                 padx=20, pady=8).pack(pady=20)
     
     def delete_kitchen_user(self):
         """Elimina utente cucina"""
-        messagebox.showinfo("Info", "Funzionalità in sviluppo")
+        selection = self.kitchen_users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Attenzione", "Seleziona un utente")
+            return
+        
+        user_id = int(selection[0])
+        values = self.kitchen_users_tree.item(user_id)['values']
+        username = values[1]
+        
+        result = messagebox.askyesno("Conferma", 
+                                    f"Eliminare l'utente '{username}'?\n\nQuesta azione è irreversibile.")
+        if result:
+            try:
+                self.database.delete_kitchen_user(user_id)
+                messagebox.showinfo("✅ Successo", "Utente cucina eliminato")
+                self.refresh_kitchen_users()
+            except Exception as e:
+                messagebox.showerror("Errore", f"Errore durante l'eliminazione: {str(e)}")
     
     def setup_config_tab(self):
         """TAB Configurazione"""
@@ -3167,6 +3605,85 @@ DETTAGLIO ORDINE
         # TODO: Implementare anteprima scontrino
         messagebox.showinfo("Info", "Anteprima scontrino - Da implementare")
     
+    def setup_reminder_tab(self):
+        """TAB Reminder Configuration"""
+        reminder_frame = tk.Frame(self.notebook, bg=COLORS['background'])
+        self.notebook.add(reminder_frame, text="🔔 Reminder")
+        
+        # Header
+        header = tk.Frame(reminder_frame, bg=COLORS['primary'], height=60)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="🔔 Configurazione Reminder", 
+                 font=('Arial', 18, 'bold'), fg='white', bg=COLORS['primary']).pack(pady=15)
+        
+        # Content with scrollbar
+        content = tk.Frame(reminder_frame, bg=COLORS['background'])
+        content.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Timer Settings
+        timer_frame = tk.LabelFrame(content, text="⏱️ Timeout Timer (minuti)", 
+                                     font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        timer_frame.pack(fill='x', pady=10)
+        
+        tk.Label(timer_frame, text="Timer CI (Consegna Immediata):", bg=COLORS['background']).grid(row=0, column=0, sticky='w', padx=10, pady=5)
+        self.ci_timeout_var = tk.StringVar(value=self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
+        tk.Entry(timer_frame, textvariable=self.ci_timeout_var, width=10).grid(row=0, column=1, padx=10, pady=5)
+        tk.Label(timer_frame, text="min → Avvisa cameriere", bg=COLORS['background']).grid(row=0, column=2, sticky='w', pady=5)
+        
+        tk.Label(timer_frame, text="Timer CD Inserito (Cucina):", bg=COLORS['background']).grid(row=1, column=0, sticky='w', padx=10, pady=5)
+        self.cd_timeout_var = tk.StringVar(value=self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
+        tk.Entry(timer_frame, textvariable=self.cd_timeout_var, width=10).grid(row=1, column=1, padx=10, pady=5)
+        tk.Label(timer_frame, text="min → Colonna REMINDER cucina", bg=COLORS['background']).grid(row=1, column=2, sticky='w', pady=5)
+        
+        tk.Label(timer_frame, text="Timer CD Preparato:", bg=COLORS['background']).grid(row=2, column=0, sticky='w', padx=10, pady=5)
+        self.cd_prepared_timeout_var = tk.StringVar(value=self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+        tk.Entry(timer_frame, textvariable=self.cd_prepared_timeout_var, width=10).grid(row=2, column=1, padx=10, pady=5)
+        tk.Label(timer_frame, text="min → Avvisa cameriere ritiro", bg=COLORS['background']).grid(row=2, column=2, sticky='w', pady=5)
+        
+        # Notification Settings
+        notif_frame = tk.LabelFrame(content, text="🔔 Notifiche", 
+                                    font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        notif_frame.pack(fill='x', pady=10)
+        
+        self.reminder_sound_var = tk.BooleanVar(value=self.config_manager.config.getboolean('Reminders', 'reminder_sound', fallback=True))
+        tk.Checkbutton(notif_frame, text="Suono notifica", variable=self.reminder_sound_var, bg=COLORS['background']).pack(anchor='w', padx=10, pady=5)
+        
+        self.auto_reminder_var = tk.BooleanVar(value=self.config_manager.config.getboolean('Reminders', 'auto_reminder_enabled', fallback=True))
+        tk.Checkbutton(notif_frame, text="Abilita reminder automatici", variable=self.auto_reminder_var, bg=COLORS['background']).pack(anchor='w', padx=10, pady=5)
+        
+        # Save buttons
+        btn_frame = tk.Frame(content, bg=COLORS['background'])
+        btn_frame.pack(fill='x', pady=20)
+        
+        tk.Button(btn_frame, text="💾 Salva Configurazione", bg=COLORS['accent'], fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.save_reminder_config).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="↩️ Ripristina Default", bg='#95a5a6', fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.reset_reminder_config).pack(side='left', padx=5)
+
+    def save_reminder_config(self):
+        """Save reminder configuration"""
+        if 'Reminders' not in self.config_manager.config:
+            self.config_manager.config['Reminders'] = {}
+        
+        self.config_manager.config['Reminders']['ci_timeout'] = self.ci_timeout_var.get()
+        self.config_manager.config['Reminders']['cd_timeout'] = self.cd_timeout_var.get()
+        self.config_manager.config['Reminders']['cd_prepared_timeout'] = self.cd_prepared_timeout_var.get()
+        self.config_manager.config['Reminders']['reminder_sound'] = str(self.reminder_sound_var.get())
+        self.config_manager.config['Reminders']['auto_reminder_enabled'] = str(self.auto_reminder_var.get())
+        
+        self.config_manager.save_config()
+        messagebox.showinfo("✅ Successo", "Configurazione reminder salvata")
+
+    def reset_reminder_config(self):
+        """Reset reminder config to defaults"""
+        self.ci_timeout_var.set('10')
+        self.cd_timeout_var.set('25')
+        self.cd_prepared_timeout_var.set('5')
+        self.reminder_sound_var.set(True)
+        self.auto_reminder_var.set(True)
+    
     def setup_windows_control_tab(self):
         """TAB Controllo Finestre"""
         windows_frame = tk.Frame(self.notebook, bg=COLORS['background'])
@@ -3253,80 +3770,80 @@ DETTAGLIO ORDINE
         messagebox.showinfo("✅ Successo", "Preferenze salvate")
     
     def storicizza_ordini(self):
-        """Archive current orders_history.db file"""
+        """Move completed orders to dated history database"""
+        if not messagebox.askyesno("Conferma", "Storicizzare gli ordini completati?\n\nGli ordini pagati saranno spostati in un database storico datato."):
+            return
+        
         try:
-            history_db = 'orders_history.db'
+            # Create new history database with date
+            today = datetime.now().strftime('%Y-%m-%d')
+            new_history_db = f"orders_history_{today}.db"
             
-            # Check if orders_history.db exists
-            if not os.path.exists(history_db):
-                messagebox.showwarning("⚠️ Attenzione", "File orders_history.db non trovato")
+            if os.path.exists(new_history_db):
+                messagebox.showwarning("Attenzione", f"Database storico {new_history_db} esiste già")
                 return
             
-            # Show confirmation dialog
-            result = messagebox.askyesno("📦 Storicizza Ordini", 
-                                        "Vuoi archiviare il database orders_history.db?\n\n"
-                                        "Verrà rinominato con la data dell'ultimo ordine\n"
-                                        "e verrà creato un nuovo database vuoto.")
-            if not result:
+            # Get completed orders
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM orders WHERE status = 'pagato'")
+            orders = cursor.fetchall()
+            
+            if not orders:
+                messagebox.showinfo("Info", "Nessun ordine completato da storicizzare")
+                conn.close()
                 return
             
-            # Get last order date from database
-            conn = sqlite3.connect(history_db)
-            cursor = conn.cursor()
-            cursor.execute("SELECT MAX(timestamp) FROM orders")
-            last_date = cursor.fetchone()[0]
+            # Create new history database
+            from database import Database
+            hist_db = Database(new_history_db)
             
-            if last_date:
-                # Extract date from timestamp (format: YYYY-MM-DD HH:MM:SS or similar)
-                date_str = last_date.split()[0] if ' ' in last_date else last_date[:10]
-            else:
-                # No orders, use current date
-                date_str = datetime.now().strftime('%Y-%m-%d')
-            
-            # Close connection
-            conn.close()
-            
-            # Create new filename
-            new_filename = f'orders_history_{date_str}.db'
-            
-            # Check if destination file already exists
-            if os.path.exists(new_filename):
-                counter = 1
-                while os.path.exists(f'orders_history_{date_str}_{counter}.db'):
-                    counter += 1
-                new_filename = f'orders_history_{date_str}_{counter}.db'
-            
-            # Rename the file
-            os.rename(history_db, new_filename)
-            logger.info(f"Archived orders_history.db to {new_filename}")
-            
-            # Create new empty orders_history.db with same schema
-            conn = sqlite3.connect(history_db)
-            cursor = conn.cursor()
-            
-            # Get schema from the archived database
-            old_conn = sqlite3.connect(new_filename)
-            old_cursor = old_conn.cursor()
-            old_cursor.execute("SELECT sql FROM sqlite_master WHERE type='table'")
-            tables_sql = old_cursor.fetchall()
-            old_conn.close()
-            
-            # Create tables in new database
-            for sql_tuple in tables_sql:
-                if sql_tuple[0]:
-                    cursor.execute(sql_tuple[0])
+            # Copy orders and their items
+            for order in orders:
+                order_dict = dict(order)
+                order_id = order_dict['id']
+                
+                # Get order items
+                cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                items = cursor.fetchall()
+                
+                # Insert into history database
+                hist_conn = hist_db.get_connection()
+                hist_cursor = hist_conn.cursor()
+                
+                # Insert order
+                columns = ', '.join(order_dict.keys())
+                placeholders = ', '.join(['?' for _ in order_dict])
+                hist_cursor.execute(f"INSERT INTO orders ({columns}) VALUES ({placeholders})", 
+                                  tuple(order_dict.values()))
+                new_order_id = hist_cursor.lastrowid
+                
+                # Insert items with new order_id
+                for item in items:
+                    item_dict = dict(item)
+                    item_dict['order_id'] = new_order_id
+                    columns = ', '.join(item_dict.keys())
+                    placeholders = ', '.join(['?' for _ in item_dict])
+                    hist_cursor.execute(f"INSERT INTO order_items ({columns}) VALUES ({placeholders})",
+                                      tuple(item_dict.values()))
+                
+                hist_conn.commit()
+                hist_conn.close()
+                
+                # Delete from current database
+                cursor.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+                cursor.execute("DELETE FROM orders WHERE id = ?", (order_id,))
             
             conn.commit()
             conn.close()
             
-            logger.info(f"Created new empty orders_history.db")
-            messagebox.showinfo("✅ Successo", 
-                              f"Database archiviato come:\n{new_filename}\n\n"
-                              f"Nuovo database orders_history.db creato")
+            logger.info(f"Storicizzati {len(orders)} ordini in {new_history_db}")
+            messagebox.showinfo("✅ Successo", f"Storicizzati {len(orders)} ordini in:\n{new_history_db}")
+            self.refresh_orders()
             
         except Exception as e:
-            logger.error(f"Error archiving orders_history.db: {e}")
-            messagebox.showerror("❌ Errore", f"Errore durante l'archiviazione:\n{str(e)}")
+            logger.error(f"Error historicizing orders: {e}")
+            messagebox.showerror("Errore", f"Errore durante la storicizzazione: {e}")
     
     def backup_now(self):
         """Manual backup function"""
@@ -3364,6 +3881,122 @@ DETTAGLIO ORDINE
         except Exception as e:
             logger.error(f"Error creating backup: {e}")
             messagebox.showerror("❌ Errore", f"Errore durante il backup:\n{str(e)}")
+    
+    def toggle_qr_cameriere(self):
+        """Toggle QR Cameriere window"""
+        if self.qr_cameriere_window and self.qr_cameriere_window.winfo_exists():
+            self.qr_cameriere_window.destroy()
+            self.qr_cameriere_window = None
+        else:
+            self.show_qr_cameriere()
+    
+    def toggle_qr_cucina(self):
+        """Toggle QR Cucina window"""
+        if self.qr_cucina_window and self.qr_cucina_window.winfo_exists():
+            self.qr_cucina_window.destroy()
+            self.qr_cucina_window = None
+        else:
+            self.show_qr_cucina()
+    
+    def show_qr_cameriere(self):
+        """Show QR code window for Cameriere"""
+        # Get ngrok URL from parent
+        ngrok_url = getattr(self.parent, 'ngrok_url', 'http://localhost:5000')
+        if hasattr(self.parent, 'master'):
+            ngrok_url = getattr(self.parent.master, 'ngrok_url', ngrok_url)
+        
+        url = f"{ngrok_url}/lacomanda/cameriere"
+        
+        self.qr_cameriere_window = tk.Toplevel(self.window)
+        self.qr_cameriere_window.title("QR Code - Cameriere")
+        self.qr_cameriere_window.geometry("400x500")
+        self.qr_cameriere_window.configure(bg='#4A90E2')
+        
+        # Title
+        tk.Label(self.qr_cameriere_window, text="📱 QR Code Cameriere", 
+                font=('Arial', 16, 'bold'), bg='#4A90E2', fg='white').pack(pady=20)
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr_image = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to PhotoImage
+        qr_photo = ImageTk.PhotoImage(qr_image)
+        qr_label = tk.Label(self.qr_cameriere_window, image=qr_photo, bg='white')
+        qr_label.image = qr_photo  # Keep reference
+        qr_label.pack(pady=10)
+        
+        # URL text
+        url_frame = tk.Frame(self.qr_cameriere_window, bg='#4A90E2')
+        url_frame.pack(pady=10, padx=20, fill='x')
+        tk.Label(url_frame, text="URL:", font=('Arial', 10, 'bold'), 
+                bg='#4A90E2', fg='white').pack(anchor='w')
+        url_entry = tk.Entry(url_frame, font=('Arial', 10), width=40)
+        url_entry.insert(0, url)
+        url_entry.config(state='readonly')
+        url_entry.pack(fill='x', pady=5)
+        
+        # Copy button
+        def copy_url():
+            self.qr_cameriere_window.clipboard_clear()
+            self.qr_cameriere_window.clipboard_append(url)
+            messagebox.showinfo("✅", "URL copiato negli appunti")
+        
+        tk.Button(self.qr_cameriere_window, text="📋 Copia URL", 
+                 command=copy_url, bg='white', fg='#4A90E2',
+                 font=('Arial', 11, 'bold'), padx=20, pady=5).pack(pady=10)
+    
+    def show_qr_cucina(self):
+        """Show QR code window for Cucina"""
+        # Get ngrok URL from parent
+        ngrok_url = getattr(self.parent, 'ngrok_url', 'http://localhost:5000')
+        if hasattr(self.parent, 'master'):
+            ngrok_url = getattr(self.parent.master, 'ngrok_url', ngrok_url)
+        
+        url = f"{ngrok_url}/lacomanda/cucina"
+        
+        self.qr_cucina_window = tk.Toplevel(self.window)
+        self.qr_cucina_window.title("QR Code - Cucina")
+        self.qr_cucina_window.geometry("400x500")
+        self.qr_cucina_window.configure(bg='#FF6B35')
+        
+        # Title
+        tk.Label(self.qr_cucina_window, text="🍳 QR Code Cucina", 
+                font=('Arial', 16, 'bold'), bg='#FF6B35', fg='white').pack(pady=20)
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr_image = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to PhotoImage
+        qr_photo = ImageTk.PhotoImage(qr_image)
+        qr_label = tk.Label(self.qr_cucina_window, image=qr_photo, bg='white')
+        qr_label.image = qr_photo  # Keep reference
+        qr_label.pack(pady=10)
+        
+        # URL text
+        url_frame = tk.Frame(self.qr_cucina_window, bg='#FF6B35')
+        url_frame.pack(pady=10, padx=20, fill='x')
+        tk.Label(url_frame, text="URL:", font=('Arial', 10, 'bold'), 
+                bg='#FF6B35', fg='white').pack(anchor='w')
+        url_entry = tk.Entry(url_frame, font=('Arial', 10), width=40)
+        url_entry.insert(0, url)
+        url_entry.config(state='readonly')
+        url_entry.pack(fill='x', pady=5)
+        
+        # Copy button
+        def copy_url():
+            self.qr_cucina_window.clipboard_clear()
+            self.qr_cucina_window.clipboard_append(url)
+            messagebox.showinfo("✅", "URL copiato negli appunti")
+        
+        tk.Button(self.qr_cucina_window, text="📋 Copia URL", 
+                 command=copy_url, bg='white', fg='#FF6B35',
+                 font=('Arial', 11, 'bold'), padx=20, pady=5).pack(pady=10)
     
     def print_receipt(self, receipt_text):
         """Print receipt function"""
@@ -3448,10 +4081,588 @@ DETTAGLIO ORDINE
             logger.error(f"Error getting order databases: {e}")
             return []
     
+    def open_statistics_window(self):
+        """Open statistics window"""
+        StatisticsWindow(self.window, self.database)
+    
+    def setup_receipt_tab(self):
+        """TAB Configurazione Scontrino"""
+        receipt_frame = tk.Frame(self.notebook, bg=COLORS['background'])
+        self.notebook.add(receipt_frame, text="🧾 Scontrino")
+        
+        # Header
+        header = tk.Frame(receipt_frame, bg=COLORS['primary'], height=60)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="🧾 Configurazione Scontrino", 
+                 font=('Arial', 18, 'bold'), fg='white', bg=COLORS['primary']).pack(pady=15)
+        
+        # Content with scrollbar
+        canvas = tk.Canvas(receipt_frame, bg=COLORS['background'])
+        scrollbar = ttk.Scrollbar(receipt_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=COLORS['background'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True, padx=20, pady=20)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Company Info Section
+        company_frame = tk.LabelFrame(scrollable_frame, text="🏢 Dati Azienda", 
+                                       font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        company_frame.pack(fill='x', pady=10, padx=10)
+        
+        self.company_entries = {}
+        fields = [
+            ('name', 'Nome Azienda'),
+            ('address', 'Indirizzo'),
+            ('phone', 'Telefono'),
+            ('email', 'Email'),
+            ('vat_number', 'P.IVA'),
+            ('fiscal_code', 'Codice Fiscale'),
+            ('website', 'Sito Web')
+        ]
+        
+        for i, (key, label) in enumerate(fields):
+            tk.Label(company_frame, text=label + ":", bg=COLORS['background']).grid(row=i, column=0, sticky='w', padx=10, pady=5)
+            entry = tk.Entry(company_frame, width=50)
+            entry.grid(row=i, column=1, padx=10, pady=5)
+            value = self.config_manager.config.get('CompanyInfo', key, fallback='')
+            entry.insert(0, value)
+            self.company_entries[key] = entry
+        
+        # Receipt Style Section
+        style_frame = tk.LabelFrame(scrollable_frame, text="🎨 Stile Scontrino",
+                                    font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        style_frame.pack(fill='x', pady=10, padx=10)
+        
+        tk.Label(style_frame, text="Dimensione Font:", bg=COLORS['background']).grid(row=0, column=0, sticky='w', padx=10, pady=5)
+        self.font_size_var = tk.StringVar(value=self.config_manager.config.get('ReceiptStyle', 'font_size', fallback='10'))
+        ttk.Combobox(style_frame, textvariable=self.font_size_var, values=['8', '9', '10', '11', '12', '14'], width=10).grid(row=0, column=1, padx=10, pady=5)
+        
+        tk.Label(style_frame, text="Larghezza Carta:", bg=COLORS['background']).grid(row=1, column=0, sticky='w', padx=10, pady=5)
+        self.paper_width_var = tk.StringVar(value=self.config_manager.config.get('ReceiptStyle', 'paper_width', fallback='80'))
+        ttk.Combobox(style_frame, textvariable=self.paper_width_var, values=['58', '80'], width=10).grid(row=1, column=1, padx=10, pady=5)
+        tk.Label(style_frame, text="mm", bg=COLORS['background']).grid(row=1, column=2, sticky='w', pady=5)
+        
+        tk.Label(style_frame, text="Testo Footer:", bg=COLORS['background']).grid(row=2, column=0, sticky='w', padx=10, pady=5)
+        self.footer_text_entry = tk.Entry(style_frame, width=50)
+        self.footer_text_entry.grid(row=2, column=1, columnspan=2, padx=10, pady=5)
+        self.footer_text_entry.insert(0, self.config_manager.config.get('ReceiptStyle', 'footer_text', fallback='Grazie per la visita!'))
+        
+        # Non-Fiscal Label Section
+        fiscal_frame = tk.LabelFrame(scrollable_frame, text="⚖️ Etichetta Fiscale",
+                                     font=('Arial', 12, 'bold'), bg=COLORS['background'])
+        fiscal_frame.pack(fill='x', pady=10, padx=10)
+        
+        self.show_non_fiscal_var = tk.BooleanVar(value=self.config_manager.config.getboolean('ReceiptStyle', 'show_non_fiscal_label', fallback=True))
+        tk.Checkbutton(fiscal_frame, text="Mostra Etichetta Non Fiscale", 
+                       variable=self.show_non_fiscal_var, bg=COLORS['background']).grid(row=0, column=0, columnspan=2, sticky='w', padx=10, pady=5)
+        
+        tk.Label(fiscal_frame, text="Testo Etichetta:", bg=COLORS['background']).grid(row=1, column=0, sticky='w', padx=10, pady=5)
+        self.non_fiscal_label_entry = tk.Entry(fiscal_frame, width=50)
+        self.non_fiscal_label_entry.grid(row=1, column=1, padx=10, pady=5)
+        self.non_fiscal_label_entry.insert(0, self.config_manager.config.get('ReceiptStyle', 'non_fiscal_label_text', fallback='SCONTRINO NON FISCALE'))
+        
+        tk.Label(fiscal_frame, text="💡 Questo testo verrà visualizzato in fondo allo scontrino",
+                 font=('Arial', 8, 'italic'), bg=COLORS['background']).grid(row=2, column=0, columnspan=2, sticky='w', padx=10, pady=5)
+        
+        # Buttons
+        btn_frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
+        btn_frame.pack(fill='x', pady=20, padx=10)
+        
+        tk.Button(btn_frame, text="💾 Salva Configurazione", bg=COLORS['accent'], fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.save_receipt_config).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="👁️ Anteprima Scontrino", bg='#3498DB', fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=10, command=self.preview_receipt).pack(side='left', padx=5)
+
+    def save_receipt_config(self):
+        """Save receipt configuration"""
+        # Company Info
+        if 'CompanyInfo' not in self.config_manager.config:
+            self.config_manager.config['CompanyInfo'] = {}
+        for key, entry in self.company_entries.items():
+            self.config_manager.config['CompanyInfo'][key] = entry.get()
+        
+        # Receipt Style
+        if 'ReceiptStyle' not in self.config_manager.config:
+            self.config_manager.config['ReceiptStyle'] = {}
+        self.config_manager.config['ReceiptStyle']['font_size'] = self.font_size_var.get()
+        self.config_manager.config['ReceiptStyle']['paper_width'] = self.paper_width_var.get()
+        self.config_manager.config['ReceiptStyle']['footer_text'] = self.footer_text_entry.get()
+        self.config_manager.config['ReceiptStyle']['show_non_fiscal_label'] = str(self.show_non_fiscal_var.get())
+        self.config_manager.config['ReceiptStyle']['non_fiscal_label_text'] = self.non_fiscal_label_entry.get()
+        
+        self.config_manager.save_config()
+        messagebox.showinfo("✅ Successo", "Configurazione scontrino salvata")
+
+    def preview_receipt(self):
+        """Show receipt preview"""
+        # Create sample receipt text
+        config = self.config_manager.config
+        char_width = 32 if config.get('ReceiptStyle', 'paper_width', fallback='80') == '58' else 42
+        
+        receipt = "=" * char_width + "\n"
+        receipt += config.get('CompanyInfo', 'name', fallback='LA COMANDA').center(char_width) + "\n"
+        receipt += config.get('CompanyInfo', 'address', fallback='').center(char_width) + "\n"
+        receipt += config.get('CompanyInfo', 'phone', fallback='').center(char_width) + "\n"
+        receipt += "=" * char_width + "\n\n"
+        
+        receipt += "Tavolo: 5\n"
+        receipt += "Cameriere: Mario Rossi\n"
+        receipt += datetime.now().strftime("%d/%m/%Y %H:%M") + "\n"
+        receipt += "-" * char_width + "\n\n"
+        
+        receipt += "2x Pizza Margherita    €16.00\n"
+        receipt += "1x Coca Cola           €3.00\n"
+        receipt += "-" * char_width + "\n"
+        receipt += f"TOTALE:                €19.00\n\n"
+        
+        if config.get('CompanyInfo', 'vat_number', fallback=''):
+            receipt += f"P.IVA: {config.get('CompanyInfo', 'vat_number')}\n"
+        
+        receipt += "\n" + config.get('ReceiptStyle', 'footer_text', fallback='Grazie!').center(char_width) + "\n"
+        
+        if config.getboolean('ReceiptStyle', 'show_non_fiscal_label', fallback=True):
+            receipt += "\n" + config.get('ReceiptStyle', 'non_fiscal_label_text', fallback='SCONTRINO NON FISCALE').center(char_width) + "\n"
+        
+        receipt += "=" * char_width + "\n"
+        
+        # Show in dialog
+        preview_win = tk.Toplevel(self.window)
+        preview_win.title("Anteprima Scontrino")
+        preview_win.geometry("500x600")
+        
+        text_widget = scrolledtext.ScrolledText(preview_win, font=('Courier New', 10), wrap='none')
+        text_widget.pack(fill='both', expand=True, padx=10, pady=10)
+        text_widget.insert('1.0', receipt)
+        text_widget.config(state='disabled')
+        
+        tk.Button(preview_win, text="❌ Chiudi", command=preview_win.destroy).pack(pady=10)
+    
+    def generate_test_data(self):
+        """Generate comprehensive test data"""
+        if not messagebox.askyesno("Conferma", "Generare dati di test? Questo creerà database storici e ordini fittizi."):
+            return
+        
+        try:
+            import random
+            from datetime import timedelta
+            
+            # Test waiters (NOTE: These are TEST CREDENTIALS ONLY - NOT FOR PRODUCTION)
+            test_waiters = [
+                ('mario.rossi', 'password123', 'Mario Rossi'),
+                ('luca.bianchi', 'password123', 'Luca Bianchi'),
+                ('anna.verdi', 'password123', 'Anna Verdi'),
+                ('sofia.neri', 'password123', 'Sofia Neri'),
+                ('marco.ferrari', 'password123', 'Marco Ferrari')
+            ]
+            
+            for username, password, full_name in test_waiters:
+                self.database.add_waiter(username, password, full_name)
+            
+            # Test kitchen users
+            test_kitchen = [
+                ('chef_mario', 'password123', 'Chef Mario'),
+                ('cuoco_luca', 'password123', 'Cuoco Luca'),
+                ('aiuto_anna', 'password123', 'Aiuto Anna')
+            ]
+            
+            for username, password, full_name in test_kitchen:
+                self.database.add_kitchen_user(username, password, full_name)
+            
+            # Test products (add to menu)
+            test_products = [
+                ('Antipasti', 'Bruschetta', 6.00, 'CD'),
+                ('Antipasti', 'Caprese', 7.50, 'CD'),
+                ('Primi', 'Pasta Carbonara', 12.00, 'CD'),
+                ('Primi', 'Lasagna', 11.00, 'CD'),
+                ('Pizza', 'Margherita', 8.00, 'CD'),
+                ('Pizza', 'Diavola', 10.00, 'CD'),
+                ('Secondi', 'Bistecca', 18.00, 'CD'),
+                ('Secondi', 'Pollo Arrosto', 14.00, 'CD'),
+                ('Dolci', 'Tiramisù', 5.00, 'CI'),
+                ('Dolci', 'Panna Cotta', 4.50, 'CI'),
+                ('Bevande', 'Acqua', 2.00, 'CI'),
+                ('Bevande', 'Vino Rosso', 15.00, 'CI'),
+                ('Colazione', 'Caffè', 1.50, 'CI'),
+                ('Colazione', 'Cornetto', 2.00, 'CI'),
+                ('Colazione', 'Cappuccino', 2.50, 'CI')
+            ]
+            
+            for cat, nome, prezzo, tipo in test_products:
+                self.database.add_menu_item(cat, nome, prezzo, '', '', tipo)
+            
+            # Generate 3 history databases (3 months, 2 months, 1 month ago)
+            now = datetime.now()
+            history_dates = [
+                now - timedelta(days=90),
+                now - timedelta(days=60),
+                now - timedelta(days=30)
+            ]
+            
+            for hist_date in history_dates:
+                db_name = f"orders_history_{hist_date.strftime('%Y-%m-%d')}.db"
+                hist_db = Database(db_name)
+                
+                # Generate 50-150 random orders for this period
+                num_orders = random.randint(50, 150)
+                for _ in range(num_orders):
+                    # Random date within that month
+                    order_date = hist_date + timedelta(days=random.randint(0, 29))
+                    order_time = order_date.replace(hour=random.randint(11, 22), minute=random.randint(0, 59))
+                    
+                    # Random order details
+                    table = random.randint(1, 20)
+                    people = random.randint(1, 6)
+                    waiter = random.choice(test_waiters)
+                    
+                    # Random items (2-5 items)
+                    num_items = random.randint(2, 5)
+                    items = []
+                    for _ in range(num_items):
+                        product = random.choice(test_products)
+                        items.append({
+                            'id': random.randint(1, len(test_products)),
+                            'name': product[1],
+                            'quantity': random.randint(1, 3),
+                            'price': product[2],
+                            'tipo': product[3]
+                        })
+                    
+                    # 70% normal, 20% rapid, 10% takeaway
+                    rand = random.random()
+                    if rand < 0.7:
+                        order_type = 'normal'
+                    elif rand < 0.9:
+                        order_type = 'rapid'
+                    else:
+                        order_type = 'takeaway'
+                    
+                    # Create order
+                    order_id = hist_db.create_order(table, people, waiter[0], waiter[2], items, '', order_type)
+                    
+                    # Set as paid with random discount
+                    discount_types = ['none', 'none', 'none', 'percentage', 'fixed']
+                    discount_type = random.choice(discount_types)
+                    discount_value = random.choice([0, 5, 10, 15]) if discount_type != 'none' else 0
+                    
+                    # Update to paid status
+                    conn = hist_db.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE orders 
+                        SET status = 'pagato', 
+                            discount_type = ?,
+                            discount_value = ?,
+                            timestamp = ?
+                        WHERE id = ?
+                    """, (discount_type, discount_value, order_time.isoformat(), order_id))
+                    conn.commit()
+                    conn.close()
+            
+            # Generate 10-30 orders in current database
+            num_current = random.randint(10, 30)
+            for _ in range(num_current):
+                order_time = now - timedelta(hours=random.randint(0, 8))
+                table = random.randint(1, 20)
+                people = random.randint(1, 6)
+                waiter = random.choice(test_waiters)
+                
+                num_items = random.randint(2, 5)
+                items = []
+                for _ in range(num_items):
+                    product = random.choice(test_products)
+                    items.append({
+                        'id': random.randint(1, len(test_products)),
+                        'name': product[1],
+                        'quantity': random.randint(1, 3),
+                        'price': product[2],
+                        'tipo': product[3]
+                    })
+                
+                rand = random.random()
+                order_type = 'normal' if rand < 0.7 else ('rapid' if rand < 0.9 else 'takeaway')
+                
+                order_id = self.database.create_order(table, people, waiter[0], waiter[2], items, '', order_type)
+                
+                # Some paid, some in progress
+                if random.random() < 0.6:
+                    conn = self.database.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE orders SET status = 'pagato' WHERE id = ?", (order_id,))
+                    conn.commit()
+                    conn.close()
+            
+            self.refresh_orders()
+            messagebox.showinfo("✅ Successo", f"Dati di test generati:\n- 5 camerieri\n- 3 utenti cucina\n- 15 prodotti menu\n- 3 database storici\n- Ordini casuali")
+            
+        except Exception as e:
+            logger.error(f"Error generating test data: {e}")
+            messagebox.showerror("Errore", f"Errore generazione dati: {e}")
+
+    def clean_test_data(self):
+        """Clean test data"""
+        if not messagebox.askyesno("Conferma", "Eliminare TUTTI i dati di test? ATTENZIONE: Azione irreversibile!"):
+            return
+        
+        try:
+            # Remove history databases
+            for file in os.listdir('.'):
+                if file.startswith('orders_history_') and file.endswith('.db'):
+                    os.remove(file)
+                    logger.info(f"Removed {file}")
+            
+            messagebox.showinfo("✅ Successo", "Database storici di test rimossi")
+        except Exception as e:
+            logger.error(f"Error cleaning test data: {e}")
+            messagebox.showerror("Errore", f"Errore pulizia dati: {e}")
+    
     def on_close(self):
         """Salva configurazione al chiudere"""
+        # Disconnect Socket.IO client if connected
+        if hasattr(self, 'sio_client') and self.sio_client and self.sio_client.connected:
+            try:
+                self.sio_client.disconnect()
+                logger.info("Socket.IO client disconnected")
+            except Exception as e:
+                logger.warning(f"Error disconnecting Socket.IO: {e}")
+        
         self.config_manager.save_window_geometry('admin_console', self.window)
         self.window.destroy()
+
+
+# ==============================================================================
+# STATISTICS WINDOW
+# ==============================================================================
+
+class StatisticsWindow:
+    """Finestra Statistiche con 3 tab"""
+    
+    def __init__(self, parent, database):
+        self.database = database
+        self.window = tk.Toplevel(parent)
+        self.window.title("📊 Statistiche - La Comanda")
+        self.window.geometry("1000x700")
+        
+        # Notebook for tabs
+        self.notebook = ttk.Notebook(self.window)
+        self.notebook.pack(fill='both', expand=True)
+        
+        self.setup_economic_tab()
+        self.setup_performance_tab()
+        self.setup_products_tab()
+    
+    def get_all_databases(self):
+        """Get all order databases including history (EXCLUDE backups/)"""
+        dbs = []
+        if os.path.exists('orders.db'):
+            dbs.append('orders.db')
+        
+        # Get orders_history_*.db files (NOT in backups/ folder)
+        for file in os.listdir('.'):
+            if file.startswith('orders_history') and file.endswith('.db'):
+                full_path = os.path.join('.', file)
+                if os.path.isfile(full_path):
+                    dbs.append(file)
+        
+        return dbs
+    
+    def setup_economic_tab(self):
+        """💰 Tab Economiche"""
+        frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(frame, text="💰 Economiche")
+        
+        # Statistics summary
+        stats_frame = tk.LabelFrame(frame, text="Riepilogo Economico", font=('Arial', 12, 'bold'))
+        stats_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate stats from all databases
+        total_revenue = 0
+        total_orders = 0
+        
+        for db_file in self.get_all_databases():
+            try:
+                conn = sqlite3.connect(db_file)
+                cursor = conn.cursor()
+                # Get paid orders with totals
+                cursor.execute("""
+                    SELECT COUNT(*), SUM(total) 
+                    FROM orders 
+                    WHERE status = 'pagato'
+                """)
+                count, revenue = cursor.fetchone()
+                total_orders += count or 0
+                total_revenue += revenue or 0
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error reading {db_file}: {e}")
+        
+        avg_ticket = total_revenue / total_orders if total_orders > 0 else 0
+        
+        tk.Label(stats_frame, text=f"Incasso Totale: €{total_revenue:.2f}", 
+                 font=('Arial', 14, 'bold')).pack(anchor='w', padx=10, pady=5)
+        tk.Label(stats_frame, text=f"Ordini Totali: {total_orders}",
+                 font=('Arial', 12)).pack(anchor='w', padx=10, pady=3)
+        tk.Label(stats_frame, text=f"Scontrino Medio: €{avg_ticket:.2f}",
+                 font=('Arial', 12)).pack(anchor='w', padx=10, pady=3)
+        
+        # Graph frame
+        graph_frame = tk.LabelFrame(frame, text="Incasso nel Tempo", font=('Arial', 12, 'bold'))
+        graph_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Add matplotlib graph here (revenue over time)
+        self.create_revenue_graph(graph_frame)
+    
+    def create_revenue_graph(self, parent):
+        """Create revenue over time graph"""
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+            import pandas as pd
+            
+            # Collect data from all databases
+            all_orders = []
+            for db_file in self.get_all_databases():
+                try:
+                    conn = sqlite3.connect(db_file)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT DATE(timestamp) as date, SUM(total) as revenue
+                        FROM orders
+                        WHERE status = 'pagato'
+                        GROUP BY DATE(timestamp)
+                        ORDER BY date
+                    """)
+                    all_orders.extend(cursor.fetchall())
+                    conn.close()
+                except Exception as e:
+                    logger.error(f"Error reading {db_file}: {e}")
+            
+            if all_orders:
+                dates, revenues = zip(*all_orders)
+                
+                fig = Figure(figsize=(8, 4), dpi=100)
+                ax = fig.add_subplot(111)
+                ax.plot(range(len(dates)), revenues, marker='o', linestyle='-', color='#2ECC71')
+                ax.set_xlabel('Data')
+                ax.set_ylabel('Incasso (€)')
+                ax.set_title('Incasso Giornaliero')
+                ax.grid(True, alpha=0.3)
+                
+                # Rotate x-labels for readability - show up to 10 labels evenly spaced
+                if len(dates) > 0:
+                    # Calculate step to show approximately 10 labels
+                    step = max(1, len(dates) // 10)
+                    indices = list(range(0, len(dates), step))
+                    # Always include the last date
+                    if len(dates) - 1 not in indices:
+                        indices.append(len(dates) - 1)
+                    ax.set_xticks(indices)
+                    ax.set_xticklabels([dates[i] for i in indices], rotation=45)
+                
+                fig.tight_layout()
+                
+                canvas = FigureCanvasTkAgg(fig, parent)
+                canvas.draw()
+                canvas.get_tk_widget().pack(fill='both', expand=True)
+            else:
+                tk.Label(parent, text="Nessun dato disponibile", font=('Arial', 14)).pack(pady=50)
+                
+        except Exception as e:
+            logger.error(f"Error creating graph: {e}")
+            tk.Label(parent, text=f"Errore grafico: {e}", font=('Arial', 12)).pack(pady=50)
+    
+    def setup_performance_tab(self):
+        """⚡ Tab Performance"""
+        frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(frame, text="⚡ Performance")
+        
+        tk.Label(frame, text="Performance Statistics", font=('Arial', 16, 'bold')).pack(pady=20)
+        
+        # Kitchen performance
+        kitchen_frame = tk.LabelFrame(frame, text="👨‍🍳 Cucina", font=('Arial', 12, 'bold'))
+        kitchen_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate average preparation time for CD orders
+        # TODO: Implement timing tracking
+        tk.Label(kitchen_frame, text="Tempo Medio Preparazione CD: Da implementare",
+                 font=('Arial', 11)).pack(anchor='w', padx=10, pady=5)
+        tk.Label(kitchen_frame, text="% Ordini oltre 25 min: Da implementare",
+                 font=('Arial', 11)).pack(anchor='w', padx=10, pady=5)
+        
+        # Waiter performance
+        waiter_frame = tk.LabelFrame(frame, text="👨‍💼 Camerieri", font=('Arial', 12, 'bold'))
+        waiter_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate per-waiter stats
+        waiter_stats = {}
+        for db_file in self.get_all_databases():
+            try:
+                conn = sqlite3.connect(db_file)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT waiter_name, COUNT(*), SUM(total)
+                    FROM orders
+                    WHERE status = 'pagato'
+                    GROUP BY waiter_name
+                """)
+                for waiter, count, revenue in cursor.fetchall():
+                    if waiter not in waiter_stats:
+                        waiter_stats[waiter] = {'orders': 0, 'revenue': 0}
+                    waiter_stats[waiter]['orders'] += count or 0
+                    waiter_stats[waiter]['revenue'] += revenue or 0
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error reading {db_file}: {e}")
+        
+        for waiter, stats in sorted(waiter_stats.items(), key=lambda x: x[1]['revenue'], reverse=True):
+            tk.Label(waiter_frame, text=f"{waiter}: {stats['orders']} ordini, €{stats['revenue']:.2f}",
+                     font=('Arial', 11)).pack(anchor='w', padx=10, pady=2)
+    
+    def setup_products_tab(self):
+        """🍕 Tab Prodotti"""
+        frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(frame, text="🍕 Prodotti")
+        
+        tk.Label(frame, text="Statistiche Prodotti", font=('Arial', 16, 'bold')).pack(pady=20)
+        
+        # Top products frame
+        top_frame = tk.LabelFrame(frame, text="🏆 Top 10 Piatti", font=('Arial', 12, 'bold'))
+        top_frame.pack(fill='x', padx=20, pady=10)
+        
+        # Calculate top products
+        product_sales = {}
+        for db_file in self.get_all_databases():
+            try:
+                conn = sqlite3.connect(db_file)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT oi.menu_item_name, SUM(oi.quantity)
+                    FROM order_items oi
+                    JOIN orders o ON oi.order_id = o.id
+                    WHERE o.status = 'pagato'
+                    GROUP BY oi.menu_item_name
+                """)
+                for product, qty in cursor.fetchall():
+                    product_sales[product] = product_sales.get(product, 0) + (qty or 0)
+                conn.close()
+            except Exception as e:
+                logger.error(f"Error reading {db_file}: {e}")
+        
+        # Sort and display top 10
+        top_products = sorted(product_sales.items(), key=lambda x: x[1], reverse=True)[:10]
+        for i, (product, qty) in enumerate(top_products, 1):
+            tk.Label(top_frame, text=f"{i}. {product}: {qty} venduti",
+                     font=('Arial', 11)).pack(anchor='w', padx=10, pady=2)
 
 
 # ==============================================================================
@@ -3581,16 +4792,42 @@ class KitchenDisplay:
             except:
                 elapsed_minutes = 0
             
-            # Determina icona reminder
+            # Determina icona reminder usando config values
             reminder_icon = ''
-            if tipo == 'CD' and state == 'inserito' and elapsed_minutes >= 25:
-                reminder_icon = REMINDER_ICONS['urgent']
-            elif tipo == 'CD' and state == 'inserito' and elapsed_minutes >= 20:
-                reminder_icon = REMINDER_ICONS['warning']
-            elif tipo == 'CD' and state == 'preparato' and elapsed_minutes >= 5:
-                reminder_icon = REMINDER_ICONS['warning']
-            elif tipo == 'CI' and elapsed_minutes >= 10:
-                reminder_icon = REMINDER_ICONS['warning']
+            
+            # Get timeout values from config
+            try:
+                ci_timeout = int(self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
+                cd_timeout = int(self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
+                cd_prepared_timeout = int(self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+                warning_threshold = float(self.config_manager.config.get('Reminders', 'warning_threshold_percent', fallback='0.8'))
+            except:
+                ci_timeout = 10
+                cd_timeout = 25
+                cd_prepared_timeout = 5
+                warning_threshold = 0.8
+            
+            # Calculate warning thresholds
+            cd_warning = cd_timeout * warning_threshold
+            ci_warning = ci_timeout * warning_threshold
+            
+            if tipo == 'CD' and state == 'inserito':
+                if elapsed_minutes >= cd_timeout:
+                    reminder_icon = REMINDER_ICONS['urgent']
+                elif elapsed_minutes >= cd_warning:
+                    reminder_icon = REMINDER_ICONS['warning']
+                else:
+                    reminder_icon = REMINDER_ICONS['normal']
+            elif tipo == 'CD' and state == 'preparato':
+                if elapsed_minutes >= cd_prepared_timeout:
+                    reminder_icon = REMINDER_ICONS['warning']
+                else:
+                    reminder_icon = REMINDER_ICONS['normal']
+            elif tipo == 'CI':
+                if elapsed_minutes >= ci_timeout:
+                    reminder_icon = REMINDER_ICONS['warning']
+                else:
+                    reminder_icon = REMINDER_ICONS['normal']
             
             # Posizionamento ordini
             target_column = None
@@ -3829,7 +5066,25 @@ class LaComanda:
             time.sleep(60)
     
     def check_reminders(self):
-        """Controlla e invia reminder per ordini"""
+        """Controlla e invia reminder per ordini usando valori configurati"""
+        # Check if reminders are enabled
+        try:
+            auto_enabled = self.config_manager.config.getboolean('Reminders', 'auto_reminder_enabled', fallback=True)
+            if not auto_enabled:
+                return
+        except:
+            pass
+        
+        # Get timeout values from config
+        try:
+            ci_timeout = int(self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
+            cd_timeout = int(self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
+            cd_prepared_timeout = int(self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+        except:
+            ci_timeout = 10
+            cd_timeout = 25
+            cd_prepared_timeout = 5
+        
         orders = self.database.get_all_orders()
         now = datetime.now()
         
@@ -3841,17 +5096,17 @@ class LaComanda:
                 # Determina tipo ordine (CI/CD)
                 tipo = order.get('tipo_consegna', 'CD')
                 
-                # CI: 10 min reminder
-                if tipo == 'CI' and elapsed_minutes >= 10 and not order.get('reminder_sent'):
+                # CI: configurable timeout reminder
+                if tipo == 'CI' and elapsed_minutes >= ci_timeout and not order.get('reminder_sent'):
                     self.send_reminder_notification(order, 'CI')
                 
-                # CD preparato: 5 min reminder
-                elif tipo == 'CD' and order['status'] == 'preparato' and elapsed_minutes >= 5:
+                # CD preparato: configurable timeout reminder
+                elif tipo == 'CD' and order['status'] == 'preparato' and elapsed_minutes >= cd_prepared_timeout:
                     if not order.get('reminder_sent'):
                         self.send_reminder_notification(order, 'CD_READY')
                 
-                # CD in cucina: 25 min reminder
-                elif tipo == 'CD' and order['status'] == 'inserito' and elapsed_minutes >= 25:
+                # CD in cucina: configurable timeout reminder
+                elif tipo == 'CD' and order['status'] == 'inserito' and elapsed_minutes >= cd_timeout:
                     if not order.get('reminder_sent'):
                         self.send_reminder_notification(order, 'CD_KITCHEN')
                 

@@ -7,11 +7,32 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
+        :root {
+            --bg-color: #FFFFFF;
+            --text-color: #333333;
+            --card-bg: #F5F5F5;
+            --input-bg: #FFFFFF;
+            --border-color: #DDDDDD;
+        }
+
+        [data-theme="dark"] {
+            --bg-color: #1a1a1a;
+            --text-color: #E0E0E0;
+            --card-bg: #2d2d2d;
+            --input-bg: #3a3a3a;
+            --border-color: #444444;
+        }
+
         body {
             margin: 0;
             padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #f5f5f5;
+            background: var(--bg-color);
+            color: var(--text-color);
+        }
+        
+        [data-theme="dark"] body {
+            background: #0a0a0a;
         }
         .header {
             background: #FF6B35;
@@ -51,7 +72,7 @@
             margin: 0 auto;
         }
         .column {
-            background: white;
+            background: var(--card-bg);
             border-radius: 10px;
             padding: 20px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
@@ -72,12 +93,12 @@
             border-color: #4A90E2;
             color: #4A90E2;
         }
-        .col-in-consegna .column-header {
-            border-color: #9B59B6;
-            color: #9B59B6;
+        .col-reminder .column-header {
+            border-color: #DC3545;
+            color: #DC3545;
         }
         .order-card {
-            background: #f9f9f9;
+            background: var(--input-bg);
             border-left: 5px solid;
             padding: 15px;
             margin-bottom: 15px;
@@ -94,8 +115,15 @@
         .order-card.preparato {
             border-color: #4A90E2;
         }
-        .order-card.in_consegna {
-            border-color: #9B59B6;
+        .order-card.reminder {
+            border-color: #DC3545;
+            background: #FFE5E5;
+            animation: blink-border 1.5s infinite;
+        }
+        
+        @keyframes blink-border {
+            0%, 100% { border-color: #DC3545; }
+            50% { border-color: #FF6B6B; }
         }
         .order-header {
             display: flex;
@@ -116,7 +144,7 @@
         }
         .order-item {
             padding: 8px;
-            background: white;
+            background: var(--bg-color);
             margin-bottom: 5px;
             border-radius: 3px;
             display: flex;
@@ -175,9 +203,30 @@
                 grid-template-columns: 1fr;
             }
         }
+        
+        #theme-toggle {
+            position: fixed;
+            top: 75px;
+            right: 20px;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background: rgba(0,0,0,0.1);
+            font-size: 20px;
+            z-index: 1000;
+        }
+        
+        [data-theme="dark"] #theme-toggle {
+            background: rgba(255,255,255,0.1);
+        }
     </style>
 </head>
 <body>
+    <button id="theme-toggle">
+        <span class="theme-icon">🌙</span>
+    </button>
+    
     <div class="header">
         <h1>🍳 Pannello Cucina</h1>
         <div style="display: flex; align-items: center;">
@@ -199,10 +248,10 @@
             <div id="orders-preparato"></div>
         </div>
 
-        <!-- Colonna In Consegna -->
-        <div class="column col-in-consegna">
-            <div class="column-header">🚚 IN CONSEGNA</div>
-            <div id="orders-in_consegna"></div>
+        <!-- Colonna Reminder -->
+        <div class="column col-reminder">
+            <div class="column-header">🔥 REMINDER</div>
+            <div id="orders-reminder"></div>
         </div>
     </div>
 
@@ -224,33 +273,54 @@
             // Clear columns
             document.getElementById('orders-inserito').innerHTML = '';
             document.getElementById('orders-preparato').innerHTML = '';
-            document.getElementById('orders-in_consegna').innerHTML = '';
+            document.getElementById('orders-reminder').innerHTML = '';
 
-            // Group by status
+            // Group by status with reminder logic
             orders.forEach(order => {
                 // Skip rapid and takeaway orders
                 if (order.order_type && order.order_type !== 'normal') {
                     return;
                 }
                 
-                const card = createOrderCard(order);
-                const column = document.getElementById(`orders-${order.status}`);
-                if (column) {
-                    column.appendChild(card);
+                // Calculate elapsed time
+                const orderTime = new Date(order.timestamp);
+                const now = new Date();
+                const elapsedMinutes = Math.floor((now - orderTime) / 60000);
+                
+                // Move to REMINDER if inserito and > 25 minutes
+                let displayStatus = order.status;
+                if (order.status === 'inserito' && elapsedMinutes > 25) {
+                    displayStatus = 'reminder';
+                    order.isReminder = true;
+                }
+                
+                // Only show inserito and preparato statuses (reminder is calculated)
+                if (order.status === 'inserito' || order.status === 'preparato') {
+                    const card = createOrderCard(order, displayStatus, elapsedMinutes);
+                    const column = document.getElementById(`orders-${displayStatus}`);
+                    if (column) {
+                        column.appendChild(card);
+                    }
                 }
             });
         }
 
-        function createOrderCard(order) {
+        function createOrderCard(order, displayStatus, elapsedMinutes) {
             const card = document.createElement('div');
-            card.className = `order-card ${order.status}`;
+            card.className = `order-card ${displayStatus}`;
             card.dataset.orderId = order.id;
 
             const header = document.createElement('div');
             header.className = 'order-header';
+            
+            let timeDisplay = formatTime(order.timestamp);
+            if (order.isReminder) {
+                timeDisplay = `⚠️ ${elapsedMinutes}min`;
+            }
+            
             header.innerHTML = `
                 <div class="table-number">Tavolo ${order.table_number}</div>
-                <div class="order-time">${formatTime(order.timestamp)}</div>
+                <div class="order-time">${timeDisplay}</div>
             `;
 
             const items = document.createElement('div');
@@ -280,7 +350,7 @@
             const actions = document.createElement('div');
             actions.className = 'action-buttons';
             
-            if (order.status === 'inserito') {
+            if (order.status === 'inserito' || order.isReminder) {
                 const btn = document.createElement('button');
                 btn.className = 'action-btn btn-preparato';
                 btn.textContent = '✅ Segna Preparato';
@@ -345,6 +415,21 @@
 
         // Initial load
         loadOrders();
+        
+        // Theme management
+        const savedTheme = localStorage.getItem('lacomanda_theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        document.getElementById('theme-toggle').addEventListener('click', function() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('lacomanda_theme', newTheme);
+            this.querySelector('.theme-icon').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+        });
+
+        // Set initial icon
+        document.querySelector('.theme-icon').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
     </script>
 </body>
 </html>

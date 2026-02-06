@@ -5,8 +5,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - LA COMANDA</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        :root {
+            --bg-color: #FFFFFF;
+            --text-color: #333333;
+            --card-bg: #F5F5F5;
+            --input-bg: #FFFFFF;
+            --border-color: #DDDDDD;
+        }
+
+        [data-theme="dark"] {
+            --bg-color: #1a1a1a;
+            --text-color: #E0E0E0;
+            --card-bg: #2d2d2d;
+            --input-bg: #3a3a3a;
+            --border-color: #444444;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+        
+        .login-box {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
+        
+        input {
+            background-color: var(--input-bg);
+            color: var(--text-color);
+            border-color: var(--border-color);
+        }
+        
+        #theme-toggle {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background: rgba(0,0,0,0.1);
+            font-size: 20px;
+            z-index: 1000;
+        }
+    </style>
 </head>
 <body>
+    <button id="theme-toggle">
+        <span class="theme-icon">🌙</span>
+    </button>
+    
     <div class="login-container">
         <div class="login-box">
             <h1>🍽️ LA COMANDA</h1>
@@ -60,6 +110,21 @@
                 errorDiv.style.display = 'block';
             }
         });
+        
+        // Theme management
+        const savedTheme = localStorage.getItem('lacomanda_theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        document.getElementById('theme-toggle').addEventListener('click', function() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('lacomanda_theme', newTheme);
+            this.querySelector('.theme-icon').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+        });
+
+        // Set initial icon
+        document.querySelector('.theme-icon').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
     </script>
 </body>
 </html>
