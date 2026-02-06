@@ -1,9 +1,12 @@
 # Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
 *.py[cod]
 *$py.class
-*.so
 .Python
+*.so
 build/
 develop-eggs/
 dist/
@@ -26,10 +29,23 @@ env/
 ENV/
 .venv
 
-# Database
+# Database files
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+
+# Config with sensitive data
+LaComanda.conf
+
+# Logs
+*.log
+lacomanda.log
+
+# Backups
+backups/
 
 # IDE
 .vscode/
@@ -42,8 +58,10 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Temp
+tmp/
+temp/
+*.tmp
 
 # QR Code output
 qr_code.txt
@@ -51,12 +69,6 @@ qr_code.png
 
 # ngrok
 ngrok.yml
-
-# La Comanda configuration (user-specific)
-LaComanda.conf
-
-# Backups directory
-backups/
 
 # Historic order databases
 orders_history_*.db

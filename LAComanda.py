@@ -1905,8 +1905,20 @@ class AdminConsole:
         dev_menu.add_command(label="🎲 Genera Dati di Test", command=self.generate_test_data)
         dev_menu.add_command(label="🗑️ Pulisci Dati Test", command=self.clean_test_data)
         
+        # Setup Socket.IO client for real-time updates
+        try:
+            import socketio as sio_client_module
+            self.sio_client = sio_client_module.Client()
+            self.setup_socketio_client()
+        except Exception as e:
+            logger.warning(f"Socket.IO client setup failed: {e}. Using polling fallback.")
+            self.sio_client = None
+        
         self.setup_ui()
         self.refresh_orders()
+        
+        # Start auto-refresh timer
+        self.start_auto_refresh()
         
         # Bind per salvare automaticamente su resize/move
         self.config_manager.bind_window_save('admin_console', self.window)
@@ -1914,6 +1926,86 @@ class AdminConsole:
         # Salva posizione al chiudere
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
+    
+    def setup_socketio_client(self):
+        """Setup Socket.IO client for real-time updates"""
+        @self.sio_client.on('connect')
+        def on_connect():
+            logger.info("🟢 Real-time connection established")
+            self.update_connection_indicator('connected')
+        
+        @self.sio_client.on('disconnect')
+        def on_disconnect():
+            logger.warning("🔴 Real-time connection lost")
+            self.update_connection_indicator('disconnected')
+        
+        @self.sio_client.on('new_order')
+        def on_new_order(data):
+            logger.info(f"🔔 New order received: #{data.get('order_id')}")
+            self.window.after(0, self.refresh_orders)
+            self.window.after(0, lambda: self.show_notification(f"Nuovo ordine: Tavolo {data.get('table')}"))
+        
+        @self.sio_client.on('order_updated')
+        def on_order_updated(data):
+            logger.info(f"🔄 Order updated: #{data.get('order_id')}")
+            self.window.after(0, self.refresh_orders)
+        
+        @self.sio_client.on('order_status_changed')
+        def on_status_changed(data):
+            logger.info(f"📝 Order status changed: #{data.get('order_id')} -> {data.get('status')}")
+            self.window.after(0, self.refresh_orders)
+        
+        # Try to connect
+        try:
+            self.sio_client.connect('http://localhost:5000', wait_timeout=5)
+            logger.info("Socket.IO client connected successfully")
+        except Exception as e:
+            logger.warning(f"Could not connect Socket.IO: {e}. Using polling mode.")
+    
+    def update_connection_indicator(self, status):
+        """Update connection status indicator"""
+        if hasattr(self, 'connection_indicator'):
+            if status == 'connected':
+                self.connection_indicator.config(text="🟢 Real-time", fg='green')
+            elif status == 'polling':
+                self.connection_indicator.config(text="🟠 Polling", fg='orange')
+            else:
+                self.connection_indicator.config(text="🔴 Offline", fg='red')
+    
+    def show_notification(self, message):
+        """Show toast notification"""
+        try:
+            notif = tk.Toplevel(self.window)
+            notif.title("Notifica")
+            notif.geometry("300x100+{}+{}".format(
+                self.window.winfo_x() + self.window.winfo_width() - 320,
+                self.window.winfo_y() + self.window.winfo_height() - 120
+            ))
+            notif.attributes('-topmost', True)
+            
+            tk.Label(notif, text="🔔 " + message, font=('Arial', 12, 'bold')).pack(pady=20)
+            
+            # Auto-close after 3 seconds
+            notif.after(3000, notif.destroy)
+        except Exception as e:
+            logger.error(f"Error showing notification: {e}")
+    
+    def start_auto_refresh(self):
+        """Start auto-refresh timer as fallback"""
+        def auto_refresh():
+            if hasattr(self, 'sio_client') and self.sio_client and self.sio_client.connected:
+                # Real-time is working, no need to poll
+                self.update_connection_indicator('connected')
+            else:
+                # Use polling mode
+                self.update_connection_indicator('polling')
+                self.refresh_orders()
+            
+            # Schedule next refresh
+            self.window.after(5000, auto_refresh)  # 5 seconds
+        
+        # Start after 1 second delay
+        self.window.after(1000, auto_refresh)
     def setup_ui(self):
         """Setup UI completa"""
         # Notebook per tabs
@@ -1996,6 +2088,11 @@ class AdminConsole:
         tk.Button(toolbar, text="📊 Statistiche", bg="#9C27B0", fg="white",
                  font=('Arial', 10, 'bold'), padx=15, pady=8,
                  command=self.open_statistics_window).pack(side='left', padx=5)
+        
+        # Connection indicator
+        self.connection_indicator = tk.Label(toolbar, text="🟠 Connecting...", 
+                                             fg='orange', font=('Arial', 9, 'bold'))
+        self.connection_indicator.pack(side='right', padx=10)
         
         # Legenda stati
         legend_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2891,14 +2988,94 @@ DETTAGLIO ORDINE
         messagebox.showinfo("Info", "Funzionalità da implementare")
     
     def open_historic_database(self):
-        """Apri database storico"""
-        filename = filedialog.askopenfilename(
-            title="Seleziona Database Storico",
-            filetypes=[("Database files", "*.db"), ("All files", "*.*")]
-        )
-        if filename:
-            # TODO: Aprire StoricOrdersWindow con il database selezionato
-            messagebox.showinfo("Info", f"Database selezionato: {filename}\n\nFunzionalità StoricOrdersWindow in sviluppo")
+        """Open window to browse history databases"""
+        # Find all history databases
+        history_dbs = []
+        for file in os.listdir('.'):
+            if file.startswith('orders_history') and file.endswith('.db'):
+                history_dbs.append(file)
+        
+        if not history_dbs:
+            messagebox.showinfo("Info", "Nessun database storico trovato")
+            return
+        
+        # Create dialog
+        dialog = tk.Toplevel(self.window)
+        dialog.title("📂 Gestione Storico")
+        dialog.geometry("800x600")
+        
+        tk.Label(dialog, text="Seleziona Database Storico", font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # Listbox with databases
+        listbox = tk.Listbox(dialog, font=('Arial', 11), height=10)
+        listbox.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        for db in sorted(history_dbs, reverse=True):
+            listbox.insert('end', db)
+        
+        def open_selected():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("Attenzione", "Seleziona un database")
+                return
+            
+            db_name = listbox.get(selection[0])
+            self.show_history_orders(db_name)
+            dialog.destroy()
+        
+        tk.Button(dialog, text="📖 Apri", bg=COLORS['accent'], fg='white',
+                  font=('Arial', 11, 'bold'), padx=20, pady=8, 
+                  command=open_selected).pack(pady=10)
+    
+    def show_history_orders(self, db_name):
+        """Show orders from history database"""
+        try:
+            from database import Database
+            hist_db = Database(db_name)
+            
+            # Create window
+            hist_window = tk.Toplevel(self.window)
+            hist_window.title(f"📖 Storico - {db_name}")
+            hist_window.geometry("1000x600")
+            
+            tk.Label(hist_window, text=f"Ordini Storici: {db_name}", 
+                    font=('Arial', 14, 'bold')).pack(pady=10)
+            
+            # Tree view
+            tree = ttk.Treeview(hist_window, columns=('ID', 'Tavolo', 'Cameriere', 'Data', 'Totale', 'Stato'),
+                               show='headings', height=20)
+            
+            tree.heading('ID', text='ID')
+            tree.heading('Tavolo', text='Tavolo')
+            tree.heading('Cameriere', text='Cameriere')
+            tree.heading('Data', text='Data')
+            tree.heading('Totale', text='Totale')
+            tree.heading('Stato', text='Stato')
+            
+            tree.column('ID', width=50)
+            tree.column('Tavolo', width=80)
+            tree.column('Cameriere', width=150)
+            tree.column('Data', width=200)
+            tree.column('Totale', width=100)
+            tree.column('Stato', width=100)
+            
+            tree.pack(fill='both', expand=True, padx=20, pady=10)
+            
+            # Load orders
+            conn = hist_db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, table_number, waiter_name, timestamp, total, status FROM orders ORDER BY timestamp DESC")
+            
+            for order in cursor.fetchall():
+                tree.insert('', 'end', values=order)
+            
+            conn.close()
+            
+            tk.Button(hist_window, text="❌ Chiudi", command=hist_window.destroy).pack(pady=10)
+            
+        except Exception as e:
+            logger.error(f"Error opening history: {e}")
+            messagebox.showerror("Errore", f"Errore apertura storico: {e}")
     
     def show_statistics(self):
         """Mostra statistiche"""
@@ -3592,80 +3769,80 @@ DETTAGLIO ORDINE
         messagebox.showinfo("✅ Successo", "Preferenze salvate")
     
     def storicizza_ordini(self):
-        """Archive current orders_history.db file"""
+        """Move completed orders to dated history database"""
+        if not messagebox.askyesno("Conferma", "Storicizzare gli ordini completati?\n\nGli ordini pagati saranno spostati in un database storico datato."):
+            return
+        
         try:
-            history_db = 'orders_history.db'
+            # Create new history database with date
+            today = datetime.now().strftime('%Y-%m-%d')
+            new_history_db = f"orders_history_{today}.db"
             
-            # Check if orders_history.db exists
-            if not os.path.exists(history_db):
-                messagebox.showwarning("⚠️ Attenzione", "File orders_history.db non trovato")
+            if os.path.exists(new_history_db):
+                messagebox.showwarning("Attenzione", f"Database storico {new_history_db} esiste già")
                 return
             
-            # Show confirmation dialog
-            result = messagebox.askyesno("📦 Storicizza Ordini", 
-                                        "Vuoi archiviare il database orders_history.db?\n\n"
-                                        "Verrà rinominato con la data dell'ultimo ordine\n"
-                                        "e verrà creato un nuovo database vuoto.")
-            if not result:
+            # Get completed orders
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM orders WHERE status = 'pagato'")
+            orders = cursor.fetchall()
+            
+            if not orders:
+                messagebox.showinfo("Info", "Nessun ordine completato da storicizzare")
+                conn.close()
                 return
             
-            # Get last order date from database
-            conn = sqlite3.connect(history_db)
-            cursor = conn.cursor()
-            cursor.execute("SELECT MAX(timestamp) FROM orders")
-            last_date = cursor.fetchone()[0]
+            # Create new history database
+            from database import Database
+            hist_db = Database(new_history_db)
             
-            if last_date:
-                # Extract date from timestamp (format: YYYY-MM-DD HH:MM:SS or similar)
-                date_str = last_date.split()[0] if ' ' in last_date else last_date[:10]
-            else:
-                # No orders, use current date
-                date_str = datetime.now().strftime('%Y-%m-%d')
-            
-            # Close connection
-            conn.close()
-            
-            # Create new filename
-            new_filename = f'orders_history_{date_str}.db'
-            
-            # Check if destination file already exists
-            if os.path.exists(new_filename):
-                counter = 1
-                while os.path.exists(f'orders_history_{date_str}_{counter}.db'):
-                    counter += 1
-                new_filename = f'orders_history_{date_str}_{counter}.db'
-            
-            # Rename the file
-            os.rename(history_db, new_filename)
-            logger.info(f"Archived orders_history.db to {new_filename}")
-            
-            # Create new empty orders_history.db with same schema
-            conn = sqlite3.connect(history_db)
-            cursor = conn.cursor()
-            
-            # Get schema from the archived database
-            old_conn = sqlite3.connect(new_filename)
-            old_cursor = old_conn.cursor()
-            old_cursor.execute("SELECT sql FROM sqlite_master WHERE type='table'")
-            tables_sql = old_cursor.fetchall()
-            old_conn.close()
-            
-            # Create tables in new database
-            for sql_tuple in tables_sql:
-                if sql_tuple[0]:
-                    cursor.execute(sql_tuple[0])
+            # Copy orders and their items
+            for order in orders:
+                order_dict = dict(order)
+                order_id = order_dict['id']
+                
+                # Get order items
+                cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                items = cursor.fetchall()
+                
+                # Insert into history database
+                hist_conn = hist_db.get_connection()
+                hist_cursor = hist_conn.cursor()
+                
+                # Insert order
+                columns = ', '.join(order_dict.keys())
+                placeholders = ', '.join(['?' for _ in order_dict])
+                hist_cursor.execute(f"INSERT INTO orders ({columns}) VALUES ({placeholders})", 
+                                  tuple(order_dict.values()))
+                new_order_id = hist_cursor.lastrowid
+                
+                # Insert items with new order_id
+                for item in items:
+                    item_dict = dict(item)
+                    item_dict['order_id'] = new_order_id
+                    columns = ', '.join(item_dict.keys())
+                    placeholders = ', '.join(['?' for _ in item_dict])
+                    hist_cursor.execute(f"INSERT INTO order_items ({columns}) VALUES ({placeholders})",
+                                      tuple(item_dict.values()))
+                
+                hist_conn.commit()
+                hist_conn.close()
+                
+                # Delete from current database
+                cursor.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+                cursor.execute("DELETE FROM orders WHERE id = ?", (order_id,))
             
             conn.commit()
             conn.close()
             
-            logger.info(f"Created new empty orders_history.db")
-            messagebox.showinfo("✅ Successo", 
-                              f"Database archiviato come:\n{new_filename}\n\n"
-                              f"Nuovo database orders_history.db creato")
+            logger.info(f"Storicizzati {len(orders)} ordini in {new_history_db}")
+            messagebox.showinfo("✅ Successo", f"Storicizzati {len(orders)} ordini in:\n{new_history_db}")
+            self.refresh_orders()
             
         except Exception as e:
-            logger.error(f"Error archiving orders_history.db: {e}")
-            messagebox.showerror("❌ Errore", f"Errore durante l'archiviazione:\n{str(e)}")
+            logger.error(f"Error historicizing orders: {e}")
+            messagebox.showerror("Errore", f"Errore durante la storicizzazione: {e}")
     
     def backup_now(self):
         """Manual backup function"""
@@ -4249,6 +4426,14 @@ DETTAGLIO ORDINE
     
     def on_close(self):
         """Salva configurazione al chiudere"""
+        # Disconnect Socket.IO client if connected
+        if hasattr(self, 'sio_client') and self.sio_client and self.sio_client.connected:
+            try:
+                self.sio_client.disconnect()
+                logger.info("Socket.IO client disconnected")
+            except Exception as e:
+                logger.warning(f"Error disconnecting Socket.IO: {e}")
+        
         self.config_manager.save_window_geometry('admin_console', self.window)
         self.window.destroy()
 
