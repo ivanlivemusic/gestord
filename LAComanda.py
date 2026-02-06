@@ -80,6 +80,9 @@ MENU_CSV = 'menu.csv'
 # Stati ordini
 ORDER_STATES = ['inserito', 'preparato', 'in_consegna', 'consegnato', 'pagato']
 
+# Table number for rapid/takeaway orders without assigned table
+RAPID_TAKEAWAY_TABLE_PLACEHOLDER = 0
+
 # Colori moderni - AGGIORNATI secondo specifiche
 COLORS = {
     'primary': '#2C3E50',
@@ -566,8 +569,8 @@ class Database:
                 # Get max pickup_number for today
                 today = datetime.now().date().isoformat()
                 cursor.execute(
-                    "SELECT MAX(pickup_number) FROM orders WHERE date(timestamp) = date(?) AND order_type IN ('rapid', 'takeaway')",
-                    (timestamp,)
+                    "SELECT MAX(pickup_number) FROM orders WHERE date(timestamp) = ? AND order_type IN ('rapid', 'takeaway')",
+                    (today,)
                 )
                 max_pickup = cursor.fetchone()[0]
                 pickup_number = (max_pickup or 0) + 1
@@ -1187,7 +1190,7 @@ class WebApp:
                     session['waiter_id'] = user['id']
                     session['waiter_user'] = user['username']
                     session['full_name'] = user['full_name']
-                    # Keep backward compatibility
+                    # Backward compatibility - TODO: Remove in v2.0
                     session['user_id'] = user['id']
                     session['username'] = user['username']
                     return redirect(url_for('cameriere'))
@@ -1287,7 +1290,7 @@ class WebApp:
                 
                 # For rapid/takeaway orders, table_number can be auto-generated or optional
                 if order_type in ['rapid', 'takeaway'] and not table_number:
-                    table_number = 0  # Use 0 for rapid/takeaway without table
+                    table_number = RAPID_TAKEAWAY_TABLE_PLACEHOLDER
                 
                 if not num_people:
                     logger.error("Numero persone mancante")
@@ -1300,6 +1303,11 @@ class WebApp:
                 # Get waiter info from session
                 waiter_id = session.get('waiter_id', session.get('user_id'))
                 waiter_name = session.get('full_name', 'Unknown')
+                
+                # Log warning if waiter_name is Unknown (indicates session issue)
+                if waiter_name == 'Unknown':
+                    safe_session = {k: v for k, v in session.items() if k not in ['password', 'token', 'secret']}
+                    logger.warning(f"Order creation with 'Unknown' waiter name - potential session issue. Session keys: {list(safe_session.keys())}")
                 
                 # Create order with order_type
                 order_id = self.database.create_order(
@@ -1490,7 +1498,8 @@ class ConfigManager:
             'cd_timeout': '25',
             'cd_prepared_timeout': '5',
             'reminder_sound': 'true',
-            'auto_reminder_enabled': 'true'
+            'auto_reminder_enabled': 'true',
+            'warning_threshold_percent': '0.8'
         }
         self.save_config()
     
@@ -3921,14 +3930,16 @@ class KitchenDisplay:
                 ci_timeout = int(self.config_manager.config.get('Reminders', 'ci_timeout', fallback='10'))
                 cd_timeout = int(self.config_manager.config.get('Reminders', 'cd_timeout', fallback='25'))
                 cd_prepared_timeout = int(self.config_manager.config.get('Reminders', 'cd_prepared_timeout', fallback='5'))
+                warning_threshold = float(self.config_manager.config.get('Reminders', 'warning_threshold_percent', fallback='0.8'))
             except:
                 ci_timeout = 10
                 cd_timeout = 25
                 cd_prepared_timeout = 5
+                warning_threshold = 0.8
             
-            # Calculate warning thresholds (80% of timeout)
-            cd_warning = cd_timeout * 0.8
-            ci_warning = ci_timeout * 0.8
+            # Calculate warning thresholds
+            cd_warning = cd_timeout * warning_threshold
+            ci_warning = ci_timeout * warning_threshold
             
             if tipo == 'CD' and state == 'inserito':
                 if elapsed_minutes >= cd_timeout:
