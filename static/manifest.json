@@ -1,0 +1,32 @@
+{
+  "name": "LA COMANDA - Sistema Gestione Ordini",
+  "short_name": "LA COMANDA",
+  "description": "Sistema professionale di gestione ordini per ristoranti",
+  "start_url": "/lacomanda/cameriere",
+  "display": "standalone",
+  "background_color": "#2C3E50",
+  "theme_color": "#3498DB",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "productivity"],
+  "screenshots": [
+    {
+      "src": "/static/screenshot-1.png",
+      "type": "image/png",
+      "sizes": "540x720"
+    }
+  ]
+}
