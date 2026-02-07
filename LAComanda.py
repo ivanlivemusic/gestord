@@ -32,6 +32,7 @@ import shutil
 import platform
 import tempfile
 import glob
+import socket
 
 # Flask imports
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
@@ -172,6 +173,19 @@ def create_dialog_with_scrollbar(parent, title, width, height):
     scrollbar.pack(side="right", fill="y")
     
     return scrollable_frame, button_frame, dialog
+
+def get_local_ip():
+    """Get local IP address of the machine"""
+    try:
+        # Create a socket to get the local IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Connect to a public DNS server (doesn't actually send data)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
 
 # ==============================================================================
 # DATABASE MANAGEMENT
@@ -1897,10 +1911,14 @@ class QRCodeWindow:
         }
     }
     
-    def __init__(self, parent, ngrok_url, config_manager):
+    def __init__(self, parent, ngrok_url, config_manager, local_port=5000):
         self.parent = parent
         self.ngrok_url = ngrok_url
         self.config_manager = config_manager
+        self.local_port = local_port
+        
+        # Get local IP
+        self.local_ip = get_local_ip()
         
         # Carica modalità salvata o default a 'cameriere'
         qr_config = self.config_manager.get_window_config('qr_window')
@@ -1909,8 +1927,8 @@ class QRCodeWindow:
         self.window = tk.Toplevel(parent)
         self.window.configure(bg=COLORS['background'])
         
-        # Ripristina geometria salvata
-        self.config_manager.restore_window_geometry('qr_window', self.window, "450x600+100+100")
+        # Ripristina geometria salvata con maggiore altezza per mostrare entrambi i QR
+        self.config_manager.restore_window_geometry('qr_window', self.window, "650x750+100+100")
         
         self.setup_ui()
         
@@ -1921,7 +1939,7 @@ class QRCodeWindow:
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
     def setup_ui(self):
-        """Setup UI migliorata con selezione modalità"""
+        """Setup UI migliorata con selezione modalità e doppio QR (locale + pubblico)"""
         mode_config = self.QR_MODES[self.current_mode]
         
         # Aggiorna titolo finestra
@@ -1937,9 +1955,24 @@ class QRCodeWindow:
                                      bg=mode_config['color'], fg='white')
         self.title_label.pack(pady=20)
         
-        # Container principale
-        main_frame = tk.Frame(self.window, bg=COLORS['background'])
-        main_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        # Container principale con scrollbar
+        main_container = tk.Frame(self.window, bg=COLORS['background'])
+        main_container.pack(fill='both', expand=True)
+        
+        canvas = tk.Canvas(main_container, bg=COLORS['background'])
+        scrollbar = tk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        main_frame = tk.Frame(canvas, bg=COLORS['background'])
+        
+        main_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=main_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True, padx=20, pady=20)
+        scrollbar.pack(side="right", fill="y")
         
         # Selezione modalità
         mode_frame = tk.Frame(main_frame, bg=COLORS['background'])
@@ -1955,38 +1988,75 @@ class QRCodeWindow:
         mode_combo.pack(side='left')
         mode_combo.bind('<<ComboboxSelected>>', self.on_mode_change)
         
-        # Sezione URL
-        self.url_frame = tk.LabelFrame(main_frame, text="🔗 Link di accesso", 
-                                       font=('Arial', 12, 'bold'),
-                                       bg=COLORS['background'], fg=mode_config['color'])
-        self.url_frame.pack(fill='x', pady=10)
+        # === SEZIONE LOCALE ===
+        local_frame = tk.LabelFrame(main_frame, text="🏠 Accesso Rete Locale", 
+                                    font=('Arial', 13, 'bold'),
+                                    bg=COLORS['background'], fg=mode_config['color'],
+                                    padx=10, pady=10)
+        local_frame.pack(fill='x', pady=10)
         
-        # URL display + Copy button
-        url_display_frame = tk.Frame(self.url_frame, bg=COLORS['background'])
-        url_display_frame.pack(fill='x', padx=10, pady=10)
+        # URL locale
+        tk.Label(local_frame, text=f"IP Locale: {self.local_ip}:{self.local_port}",
+                font=('Arial', 10, 'bold'), bg=COLORS['background']).pack(pady=5)
         
-        self.url_text = tk.Entry(url_display_frame, font=('Courier', 10), justify='center',
-                                 state='readonly', relief='flat', bg='white')
-        self.url_text.pack(side='left', fill='x', expand=True, padx=(0, 10))
+        local_url_frame = tk.Frame(local_frame, bg=COLORS['background'])
+        local_url_frame.pack(fill='x', pady=5)
         
-        self.copy_btn = tk.Button(url_display_frame, text="📋 Copia", font=('Arial', 10, 'bold'),
-                                  bg=mode_config['color'], fg='white', command=self.copy_url,
-                                  relief='flat', padx=15, pady=5)
-        self.copy_btn.pack(side='left')
+        self.local_url_text = tk.Entry(local_url_frame, font=('Courier', 9), justify='center',
+                                       state='readonly', relief='flat', bg='white')
+        self.local_url_text.pack(side='left', fill='x', expand=True, padx=(0, 10))
         
-        # Sezione QR Code
-        self.qr_frame = tk.LabelFrame(main_frame, text="📱 Scansiona con smartphone",
-                                      font=('Arial', 12, 'bold'),
-                                      bg=COLORS['background'], fg=mode_config['color'])
-        self.qr_frame.pack(fill='both', expand=True, pady=10)
+        self.local_copy_btn = tk.Button(local_url_frame, text="📋", font=('Arial', 10),
+                                        bg=mode_config['color'], fg='white', 
+                                        command=lambda: self.copy_url('local'),
+                                        relief='flat', padx=10, pady=3)
+        self.local_copy_btn.pack(side='left')
         
-        # QR Code container con bordo colorato
-        self.qr_container = tk.Frame(self.qr_frame, bg=mode_config['color'], padx=10, pady=10)
-        self.qr_container.pack(pady=20)
+        # QR Code locale
+        self.local_qr_container = tk.Frame(local_frame, bg=mode_config['color'], padx=8, pady=8)
+        self.local_qr_container.pack(pady=10)
         
-        # Genera e mostra QR code
-        self.qr_label = tk.Label(self.qr_container, bg='white')
-        self.qr_label.pack()
+        self.local_qr_label = tk.Label(self.local_qr_container, bg='white')
+        self.local_qr_label.pack()
+        
+        tk.Label(local_frame, text="Per dispositivi connessi alla stessa rete WiFi",
+                font=('Arial', 9, 'italic'), bg=COLORS['background'], 
+                fg='#666').pack(pady=5)
+        
+        # === SEZIONE PUBBLICA ===
+        public_frame = tk.LabelFrame(main_frame, text="🌐 Accesso Pubblico (Internet)", 
+                                     font=('Arial', 13, 'bold'),
+                                     bg=COLORS['background'], fg=mode_config['color'],
+                                     padx=10, pady=10)
+        public_frame.pack(fill='x', pady=10)
+        
+        # URL pubblico
+        tk.Label(public_frame, text="URL Pubblico (Ngrok):",
+                font=('Arial', 10, 'bold'), bg=COLORS['background']).pack(pady=5)
+        
+        public_url_frame = tk.Frame(public_frame, bg=COLORS['background'])
+        public_url_frame.pack(fill='x', pady=5)
+        
+        self.public_url_text = tk.Entry(public_url_frame, font=('Courier', 9), justify='center',
+                                        state='readonly', relief='flat', bg='white')
+        self.public_url_text.pack(side='left', fill='x', expand=True, padx=(0, 10))
+        
+        self.public_copy_btn = tk.Button(public_url_frame, text="📋", font=('Arial', 10),
+                                         bg=mode_config['color'], fg='white', 
+                                         command=lambda: self.copy_url('public'),
+                                         relief='flat', padx=10, pady=3)
+        self.public_copy_btn.pack(side='left')
+        
+        # QR Code pubblico
+        self.public_qr_container = tk.Frame(public_frame, bg=mode_config['color'], padx=8, pady=8)
+        self.public_qr_container.pack(pady=10)
+        
+        self.public_qr_label = tk.Label(self.public_qr_container, bg='white')
+        self.public_qr_label.pack()
+        
+        tk.Label(public_frame, text="Per accesso da qualsiasi dispositivo connesso a Internet",
+                font=('Arial', 9, 'italic'), bg=COLORS['background'], 
+                fg='#666').pack(pady=5)
         
         # Istruzioni
         self.instructions = tk.Label(main_frame, 
@@ -1996,13 +2066,21 @@ class QRCodeWindow:
                                      justify='center')
         self.instructions.pack(pady=10)
         
-        # Bottone apri browser
-        self.open_btn = tk.Button(main_frame, text="🌐 Apri nel Browser", 
-                                  font=('Arial', 11, 'bold'),
-                                  bg=mode_config['color'], fg='white', 
-                                  command=self.open_browser,
-                                  relief='flat', padx=20, pady=10)
-        self.open_btn.pack(pady=10)
+        # Bottoni
+        btn_frame = tk.Frame(main_frame, bg=COLORS['background'])
+        btn_frame.pack(pady=10)
+        
+        tk.Button(btn_frame, text="🌐 Apri Locale nel Browser", 
+                 font=('Arial', 10, 'bold'),
+                 bg=mode_config['color'], fg='white', 
+                 command=lambda: self.open_browser('local'),
+                 relief='flat', padx=15, pady=8).pack(side='left', padx=5)
+        
+        tk.Button(btn_frame, text="🌍 Apri Pubblico nel Browser", 
+                 font=('Arial', 10, 'bold'),
+                 bg=mode_config['color'], fg='white', 
+                 command=lambda: self.open_browser('public'),
+                 relief='flat', padx=15, pady=8).pack(side='left', padx=5)
         
         # Aggiorna display
         self.update_display()
@@ -2031,39 +2109,44 @@ class QRCodeWindow:
         self.header.config(bg=mode_config['color'])
         self.title_label.config(text=mode_config['title'], bg=mode_config['color'])
         
-        # Aggiorna colori frames
-        self.url_frame.config(fg=mode_config['color'])
-        self.qr_frame.config(fg=mode_config['color'])
-        
         # Aggiorna colori bottoni
-        self.copy_btn.config(bg=mode_config['color'])
-        self.open_btn.config(bg=mode_config['color'])
+        self.local_copy_btn.config(bg=mode_config['color'])
+        self.public_copy_btn.config(bg=mode_config['color'])
         
         # Aggiorna bordo container QR
-        self.qr_container.config(bg=mode_config['color'])
+        self.local_qr_container.config(bg=mode_config['color'])
+        self.public_qr_container.config(bg=mode_config['color'])
         
-        # Aggiorna URL
-        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
-        self.url_text.config(state='normal')
-        self.url_text.delete(0, 'end')
-        self.url_text.insert(0, full_url)
-        self.url_text.config(state='readonly')
+        # Aggiorna URL locale
+        local_url = f"http://{self.local_ip}:{self.local_port}{mode_config['url_path']}"
+        self.local_url_text.config(state='normal')
+        self.local_url_text.delete(0, 'end')
+        self.local_url_text.insert(0, local_url)
+        self.local_url_text.config(state='readonly')
+        
+        # Aggiorna URL pubblico
+        public_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        self.public_url_text.config(state='normal')
+        self.public_url_text.delete(0, 'end')
+        self.public_url_text.insert(0, public_url)
+        self.public_url_text.config(state='readonly')
         
         # Aggiorna istruzioni
         self.instructions.config(text=mode_config['instruction'])
         
-        # Rigenera QR code
-        qr_img = self.generate_qr_code()
-        self.qr_label.config(image=qr_img)
-        self.qr_label.image = qr_img
-    
-    def generate_qr_code(self):
-        """Genera QR code per la modalità corrente"""
-        mode_config = self.QR_MODES[self.current_mode]
-        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        # Rigenera QR codes
+        local_qr_img = self.generate_qr_code(local_url)
+        self.local_qr_label.config(image=local_qr_img)
+        self.local_qr_label.image = local_qr_img
         
+        public_qr_img = self.generate_qr_code(public_url)
+        self.public_qr_label.config(image=public_qr_img)
+        self.public_qr_label.image = public_qr_img
+    
+    def generate_qr_code(self, url):
+        """Genera QR code per un URL specifico"""
         qr = qrcode.QRCode(version=1, box_size=8, border=2)
-        qr.add_data(full_url)
+        qr.add_data(url)
         qr.make(fit=True)
         
         img = qr.make_image(fill_color="black", back_color="white")
@@ -2071,19 +2154,29 @@ class QRCodeWindow:
         
         return ImageTk.PhotoImage(img)
     
-    def copy_url(self):
+    def copy_url(self, url_type='public'):
         """Copia URL negli appunti"""
         mode_config = self.QR_MODES[self.current_mode]
-        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
+        
+        if url_type == 'local':
+            url = f"http://{self.local_ip}:{self.local_port}{mode_config['url_path']}"
+        else:
+            url = f"{self.ngrok_url}{mode_config['url_path']}"
+        
         self.window.clipboard_clear()
-        self.window.clipboard_append(full_url)
-        messagebox.showinfo("✅ Copiato", "Link copiato negli appunti!")
+        self.window.clipboard_append(url)
+        messagebox.showinfo("✅ Copiato", f"Link {url_type} copiato negli appunti!")
     
-    def open_browser(self):
+    def open_browser(self, url_type='public'):
         """Apri URL nel browser"""
         mode_config = self.QR_MODES[self.current_mode]
-        full_url = f"{self.ngrok_url}{mode_config['url_path']}"
-        webbrowser.open(full_url)
+        
+        if url_type == 'local':
+            url = f"http://{self.local_ip}:{self.local_port}{mode_config['url_path']}"
+        else:
+            url = f"{self.ngrok_url}{mode_config['url_path']}"
+        
+        webbrowser.open(url)
     
     def on_close(self):
         """Salva configurazione al chiudere"""
@@ -5249,7 +5342,7 @@ class LaComanda:
         time.sleep(2)
         
         # Crea finestre Tkinter
-        self.qr_window = QRCodeWindow(self.root, self.ngrok_url, self.config_manager)
+        self.qr_window = QRCodeWindow(self.root, self.ngrok_url, self.config_manager, PORT)
         self.admin_console = AdminConsole(self.root, self.database, self.webapp.socketio, self.config_manager)
         self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager, self.webapp.socketio)
         
