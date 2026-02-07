@@ -33,9 +33,10 @@ def test_database_schema():
         columns = {row[1] for row in cursor.fetchall()}
         
         required_columns = [
-            'id', 'table_number', 'waiter', 'status', 'timestamp',
+            'id', 'table_number', 'waiter_name', 'status', 'timestamp',
             'reminder_sent', 'reminder_timestamp', 'prepared_reminder_sent',
-            'needs_kitchen_reminder', 'prepared_timestamp', 'tipo_consegna'
+            'needs_kitchen_reminder', 'prepared_timestamp', 'tipo_consegna',
+            'last_reminder_type', 'last_reminder_recipient', 'last_reminder_timestamp'
         ]
         
         missing_columns = [col for col in required_columns if col not in columns]
