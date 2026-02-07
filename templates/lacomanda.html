@@ -869,7 +869,7 @@
     <script>
         const cart = {};
         const socket = io();
-        const waiterName = "{{ waiter_name }}";
+        const waiterName = {{ waiter_name|tojson }};
         
         // Join waiter room for reminders on connect
         socket.on('connect', () => {

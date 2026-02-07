@@ -3279,7 +3279,7 @@ DETTAGLIO ORDINE
         tk.Label(scrollable_frame, text="Seleziona i prodotti da ricordare", 
                 font=('Arial', 14, 'bold'), bg=COLORS['background']).pack(pady=15)
         
-        # Get all pending order items with status info
+        # Get all pending order items with status info (inserito or preparato)
         conn = self.database.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -3354,7 +3354,7 @@ DETTAGLIO ORDINE
         
         # Bind checkbox changes to auto-selection
         for var in checkbox_vars.values():
-            var.trace('w', update_recipient_selection)
+            var.trace_add('write', update_recipient_selection)
         
         # Buttons
         def send_reminder():
