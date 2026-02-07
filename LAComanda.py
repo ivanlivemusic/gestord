@@ -1625,7 +1625,16 @@ class WebApp:
             success = self.database.update_order_status(order_id, new_status)
             
             if success:
-                self.socketio.emit('order_updated', {'order_id': order_id, 'status': new_status}, namespace='/')
+                # Broadcast to all clients
+                self.socketio.emit('order_updated', {
+                    'order_id': order_id, 
+                    'status': new_status
+                }, broadcast=True)
+                # Also emit to kitchen specifically
+                self.socketio.emit('order_updated', {
+                    'order_id': order_id,
+                    'status': new_status
+                }, room='kitchen')
                 return jsonify({'success': True})
             else:
                 return jsonify({'success': False, 'error': 'Errore aggiornamento'}), 500
@@ -5772,14 +5781,23 @@ class KitchenDisplay:
                 waiter_name = order.get('waiter_name', 'Unknown')
                 table_number = order.get('table_number', '?')
                 
-                # Emit notification to waiter with waiter_name for filtering
+                # Emit notification to waiter's specific room
                 self.socketio.emit('order_ready_for_pickup', {
                     'order_id': order_id,
                     'table': table_number,
                     'waiter_name': waiter_name,
                     'message': f"🔔 Ordine Tavolo {table_number} pronto da ritirare!",
                     'timestamp': datetime.now().strftime('%H:%M')
-                }, namespace='/')
+                }, room=f"waiter_{waiter_name}")
+                
+                # Also broadcast to all for backwards compatibility
+                self.socketio.emit('order_ready_for_pickup', {
+                    'order_id': order_id,
+                    'table': table_number,
+                    'waiter_name': waiter_name,
+                    'message': f"🔔 Ordine Tavolo {table_number} pronto da ritirare!",
+                    'timestamp': datetime.now().strftime('%H:%M')
+                }, broadcast=True)
                 
                 logger.info(f"✅ Notifica ritiro → {waiter_name} (Ordine #{order_id}, Tavolo {table_number})")
         
