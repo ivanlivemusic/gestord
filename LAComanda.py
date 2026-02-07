@@ -2357,6 +2357,16 @@ class AdminConsole:
             logger.info(f"📝 Order status changed: #{data.get('order_id')} -> {data.get('status')}")
             self.window.after(0, self.refresh_orders)
         
+        @self.sio_client.on('modification_request')
+        def on_modification_request(data):
+            logger.info(f"🔔 Modification request received: #{data.get('request_id')}")
+            self.window.after(0, lambda: self.show_modification_request_popup(data))
+        
+        @self.sio_client.on('manual_reminder')
+        def on_manual_reminder(data):
+            logger.info(f"📤 Manual reminder received: {len(data.get('item_ids', []))} items")
+            self.window.after(0, lambda: self.show_notification(f"Reminder manuale inviato: {len(data.get('item_ids', []))} prodotti"))
+        
         # Try to connect
         try:
             server_url = f'http://localhost:{PORT}'
@@ -2392,6 +2402,114 @@ class AdminConsole:
             notif.after(3000, notif.destroy)
         except Exception as e:
             logger.error(f"Error showing notification: {e}")
+    
+    def show_modification_request_popup(self, data):
+        """Show modification request popup for admin approval"""
+        request_id = data.get('request_id')
+        order_id = data.get('order_id')
+        requested_by = data.get('requested_by')
+        request_type = data.get('request_type')
+        request_data = data.get('request_data')
+        
+        # Create modal dialog
+        dialog = tk.Toplevel(self.window)
+        dialog.title("🔔 Richiesta Modifica Ordine")
+        dialog.geometry("550x400")
+        dialog.configure(bg=COLORS['background'])
+        dialog.attributes('-topmost', True)
+        dialog.grab_set()
+        
+        # Header
+        header = tk.Frame(dialog, bg='#FF9800', height=80)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="🔔 Richiesta di Modifica", font=('Arial', 18, 'bold'),
+                bg='#FF9800', fg='white').pack(pady=20)
+        
+        # Content
+        content = tk.Frame(dialog, bg=COLORS['background'])
+        content.pack(fill='both', expand=True, padx=30, pady=20)
+        
+        info_fields = [
+            ('Ordine #:', str(order_id)),
+            ('Richiesta da:', requested_by),
+            ('Tipo:', request_type),
+            ('Dettagli:', request_data)
+        ]
+        
+        for label, value in info_fields:
+            row = tk.Frame(content, bg=COLORS['background'])
+            row.pack(fill='x', pady=8)
+            
+            tk.Label(row, text=label, font=('Arial', 12, 'bold'),
+                    bg=COLORS['background'], anchor='w', width=15).pack(side='left')
+            tk.Label(row, text=value, font=('Arial', 12),
+                    bg=COLORS['background'], anchor='w').pack(side='left', fill='x', expand=True)
+        
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=COLORS['background'])
+        btn_frame.pack(fill='x', padx=30, pady=20)
+        
+        def approve():
+            # For admin console, we approve directly without session check
+            try:
+                conn = self.database.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE modification_requests SET status = 'approved', processed_at = datetime('now') WHERE id = ?",
+                    (request_id,)
+                )
+                conn.commit()
+                conn.close()
+                
+                # Emit notification
+                if hasattr(self.parent, 'flask_server') and self.parent.flask_server:
+                    self.parent.flask_server.socketio.emit('modification_processed', {
+                        'request_id': request_id,
+                        'approved': True,
+                        'processed_by': 'Admin'
+                    }, namespace='/')
+                
+                messagebox.showinfo("✅ Approvato", "Richiesta di modifica approvata")
+                dialog.destroy()
+                self.refresh_orders()
+            except Exception as e:
+                logger.error(f"Error approving modification: {e}")
+                messagebox.showerror("Errore", f"Errore approvazione: {str(e)}")
+        
+        def reject():
+            try:
+                conn = self.database.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE modification_requests SET status = 'rejected', processed_at = datetime('now') WHERE id = ?",
+                    (request_id,)
+                )
+                conn.commit()
+                conn.close()
+                
+                # Emit notification
+                if hasattr(self.parent, 'flask_server') and self.parent.flask_server:
+                    self.parent.flask_server.socketio.emit('modification_processed', {
+                        'request_id': request_id,
+                        'approved': False,
+                        'processed_by': 'Admin'
+                    }, namespace='/')
+                
+                messagebox.showinfo("❌ Rifiutato", "Richiesta di modifica rifiutata")
+                dialog.destroy()
+            except Exception as e:
+                logger.error(f"Error rejecting modification: {e}")
+                messagebox.showerror("Errore", f"Errore rifiuto: {str(e)}")
+        
+        tk.Button(btn_frame, text="✅ APPROVA", command=approve,
+                 font=('Arial', 14, 'bold'), bg='#4CAF50', fg='white',
+                 padx=30, pady=15, relief='flat').pack(side='left', padx=10, expand=True, fill='x')
+        
+        tk.Button(btn_frame, text="❌ RIFIUTA", command=reject,
+                 font=('Arial', 14, 'bold'), bg='#F44336', fg='white',
+                 padx=30, pady=15, relief='flat').pack(side='left', padx=10, expand=True, fill='x')
     
     def start_auto_refresh(self):
         """Start auto-refresh timer as fallback"""
@@ -3165,45 +3283,67 @@ DETTAGLIO ORDINE
     
     def add_menu_item(self):
         """Aggiungi item menu"""
-        dialog = tk.Toplevel(self.window)
-        dialog.title("Aggiungi Piatto")
-        dialog.geometry("450x400")
-        dialog.configure(bg=COLORS['background'])
+        scrollable_frame, button_frame, dialog = create_dialog_with_scrollbar(
+            self.window, "➕ Aggiungi Nuovo Piatto", 500, 550
+        )
         
-        tk.Label(dialog, text="➕ Aggiungi Nuovo Piatto", font=('Arial', 16, 'bold'),
+        tk.Label(scrollable_frame, text="➕ Aggiungi Nuovo Piatto", font=('Arial', 16, 'bold'),
                 bg=COLORS['background']).pack(pady=20)
         
-        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
         frame.pack(padx=30, pady=10, fill='both', expand=True)
         
         fields = {}
-        labels = ['Categoria', 'Sottocategoria', 'Nome', 'Prezzo', 'Descrizione']
+        field_defs = [
+            ('Categoria', 'text'),
+            ('Sottocategoria', 'text'),
+            ('Nome', 'text'),
+            ('Prezzo', 'text'),
+            ('Tipo (CD/CI)', 'text'),
+            ('Descrizione', 'text')
+        ]
         
-        for label in labels:
+        for label, field_type in field_defs:
             tk.Label(frame, text=f"{label}:", font=('Arial', 11),
                     bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
             entry = tk.Entry(frame, font=('Arial', 11), width=40)
             entry.pack(fill='x', pady=5)
             fields[label] = entry
         
+        # Set default CD for Tipo
+        fields['Tipo (CD/CI)'].insert(0, 'CD')
+        
         def save():
             try:
-                self.database.add_menu_item(
-                    fields['Categoria'].get(),
-                    fields['Nome'].get(),
-                    float(fields['Prezzo'].get()),
-                    fields['Sottocategoria'].get(),
-                    fields['Descrizione'].get()
+                tipo = fields['Tipo (CD/CI)'].get().upper()
+                if tipo not in ['CD', 'CI']:
+                    messagebox.showerror("Errore", "Tipo deve essere CD o CI")
+                    return
+                
+                # Get menu item id after adding
+                conn = self.database.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO menu_items (categoria, nome, prezzo, sottocategoria, descrizione, tipo) VALUES (?, ?, ?, ?, ?, ?)",
+                    (fields['Categoria'].get(), fields['Nome'].get(), float(fields['Prezzo'].get()),
+                     fields['Sottocategoria'].get(), fields['Descrizione'].get(), tipo)
                 )
+                conn.commit()
+                conn.close()
+                
                 messagebox.showinfo("✅ Successo", "Piatto aggiunto")
                 dialog.destroy()
                 self.refresh_menu()
             except Exception as e:
                 messagebox.showerror("Errore", str(e))
         
-        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+        tk.Button(button_frame, text="💾 Salva", bg=COLORS['accent'], fg='white',
                  font=('Arial', 11, 'bold'), command=save, relief='flat',
-                 padx=20, pady=8).pack(pady=20)
+                 padx=20, pady=8).pack(side='left', padx=5)
+        
+        tk.Button(button_frame, text="Annulla", bg=COLORS['secondary'], fg='white',
+                 font=('Arial', 11), command=dialog.destroy, relief='flat',
+                 padx=20, pady=8).pack(side='left', padx=5)
     
     def edit_menu_item(self):
         """Modifica item menu"""
@@ -3215,15 +3355,14 @@ DETTAGLIO ORDINE
         item_id = int(selection[0])
         values = self.menu_tree.item(item_id)['values']
         
-        dialog = tk.Toplevel(self.window)
-        dialog.title("Modifica Piatto")
-        dialog.geometry("450x400")
-        dialog.configure(bg=COLORS['background'])
+        scrollable_frame, button_frame, dialog = create_dialog_with_scrollbar(
+            self.window, "✏️ Modifica Piatto", 500, 550
+        )
         
-        tk.Label(dialog, text="✏️ Modifica Piatto", font=('Arial', 16, 'bold'),
+        tk.Label(scrollable_frame, text="✏️ Modifica Piatto", font=('Arial', 16, 'bold'),
                 bg=COLORS['background']).pack(pady=20)
         
-        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
         frame.pack(padx=30, pady=10, fill='both', expand=True)
         
         fields = {}
@@ -3254,9 +3393,13 @@ DETTAGLIO ORDINE
             except Exception as e:
                 messagebox.showerror("Errore", str(e))
         
-        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+        tk.Button(button_frame, text="💾 Salva", bg=COLORS['accent'], fg='white',
                  font=('Arial', 11, 'bold'), command=save, relief='flat',
-                 padx=20, pady=8).pack(pady=20)
+                 padx=20, pady=8).pack(side='left', padx=5)
+        
+        tk.Button(button_frame, text="Annulla", bg=COLORS['secondary'], fg='white',
+                 font=('Arial', 11), command=dialog.destroy, relief='flat',
+                 padx=20, pady=8).pack(side='left', padx=5)
     
     def delete_menu_item(self):
         """Elimina item menu"""
