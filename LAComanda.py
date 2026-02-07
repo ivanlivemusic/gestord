@@ -1570,15 +1570,9 @@ class WebApp:
                 
                 logger.info(f"Ordine creato con successo: ID={order_id}, Tipo={order_type}, Tavolo={table_number}, Cameriere={waiter_name}")
                 
-                # Notifica via socketio - broadcast to kitchen and all clients
+                # Notifica via socketio - emit to kitchen room for real-time updates
                 try:
-                    # Broadcast to all
-                    self.socketio.emit('new_order', {
-                        'order_id': order_id, 
-                        'order_type': order_type,
-                        'table': table_number
-                    }, broadcast=True)
-                    # Also emit specifically to kitchen room
+                    # Emit to kitchen room
                     self.socketio.emit('new_order', {
                         'order_id': order_id,
                         'order_type': order_type,
@@ -1625,12 +1619,7 @@ class WebApp:
             success = self.database.update_order_status(order_id, new_status)
             
             if success:
-                # Broadcast to all clients
-                self.socketio.emit('order_updated', {
-                    'order_id': order_id, 
-                    'status': new_status
-                }, broadcast=True)
-                # Also emit to kitchen specifically
+                # Emit to kitchen room for real-time updates
                 self.socketio.emit('order_updated', {
                     'order_id': order_id,
                     'status': new_status
@@ -3007,7 +2996,8 @@ class AdminConsole:
                                     reminder_status = f"🔥 {int(prepared_elapsed)}min"
                             else:
                                 reminder_status = f"⏱️ {int(prepared_elapsed)}min"
-                except:
+                except (ValueError, KeyError, AttributeError) as e:
+                    logger.debug(f"Error calculating reminder status: {e}")
                     reminder_status = "-"
             else:
                 reminder_status = "-"
@@ -5790,15 +5780,6 @@ class KitchenDisplay:
                     'timestamp': datetime.now().strftime('%H:%M')
                 }, room=f"waiter_{waiter_name}")
                 
-                # Also broadcast to all for backwards compatibility
-                self.socketio.emit('order_ready_for_pickup', {
-                    'order_id': order_id,
-                    'table': table_number,
-                    'waiter_name': waiter_name,
-                    'message': f"🔔 Ordine Tavolo {table_number} pronto da ritirare!",
-                    'timestamp': datetime.now().strftime('%H:%M')
-                }, broadcast=True)
-                
                 logger.info(f"✅ Notifica ritiro → {waiter_name} (Ordine #{order_id}, Tavolo {table_number})")
         
         self.refresh_display()
@@ -6181,9 +6162,16 @@ class LaComanda:
             # Avvia nuovo tunnel con pooling enabled per evitare errori "endpoint already in use"
             logger.info("Avvio tunnel ngrok con pooling enabled...")
             from pyngrok.conf import PyngrokConfig
-            pyngrok_config = PyngrokConfig(region='us')  # Can be configured based on location
+            
+            # Get region from config, default to 'us'
+            try:
+                region = self.config_manager.config.get('Ngrok', 'region', fallback='us')
+            except Exception:
+                region = 'us'
+            
+            pyngrok_config = PyngrokConfig(region=region)
             public_url = ngrok.connect(PORT, bind_tls=True, pyngrok_config=pyngrok_config)
-            logger.info(f"✅ Tunnel attivo: {public_url.public_url}")
+            logger.info(f"✅ Tunnel attivo (region: {region}): {public_url.public_url}")
             return public_url.public_url
             
         except Exception as e:
