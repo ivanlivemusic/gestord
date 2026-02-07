@@ -1570,9 +1570,20 @@ class WebApp:
                 
                 logger.info(f"Ordine creato con successo: ID={order_id}, Tipo={order_type}, Tavolo={table_number}, Cameriere={waiter_name}")
                 
-                # Notifica via socketio
+                # Notifica via socketio - broadcast to kitchen and all clients
                 try:
-                    self.socketio.emit('new_order', {'order_id': order_id, 'order_type': order_type}, namespace='/')
+                    # Broadcast to all
+                    self.socketio.emit('new_order', {
+                        'order_id': order_id, 
+                        'order_type': order_type,
+                        'table': table_number
+                    }, broadcast=True)
+                    # Also emit specifically to kitchen room
+                    self.socketio.emit('new_order', {
+                        'order_id': order_id,
+                        'order_type': order_type,
+                        'table': table_number
+                    }, room='kitchen')
                     logger.debug(f"Notifica SocketIO inviata per ordine {order_id}")
                 except Exception as socket_error:
                     logger.error(f"Errore invio notifica SocketIO: {socket_error}")
@@ -1756,6 +1767,7 @@ class WebApp:
     
     def setup_socketio(self):
         """Configura eventi SocketIO"""
+        from flask_socketio import join_room, leave_room
         
         @self.socketio.on('connect')
         def handle_connect():
@@ -1764,6 +1776,23 @@ class WebApp:
         @self.socketio.on('disconnect')
         def handle_disconnect():
             logger.info('Client WebSocket disconnesso')
+        
+        @self.socketio.on('join_waiter_room')
+        def handle_join_waiter_room(data):
+            """Join waiter-specific room for reminders"""
+            waiter_name = data.get('waiter_name')
+            if waiter_name:
+                room = f"waiter_{waiter_name}"
+                join_room(room)
+                logger.info(f"👔 Waiter {waiter_name} joined room: {room}")
+                emit('room_joined', {'room': room, 'role': 'waiter'})
+        
+        @self.socketio.on('join_kitchen_room')
+        def handle_join_kitchen_room():
+            """Join kitchen room for order notifications and reminders"""
+            join_room('kitchen')
+            logger.info("👨‍🍳 Kitchen client joined room: kitchen")
+            emit('room_joined', {'room': 'kitchen', 'role': 'kitchen'})
     
     def run(self):
         """Avvia server Flask"""
@@ -2675,14 +2704,14 @@ class AdminConsole:
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
         
-        # Treeview con TUTTE le colonne
-        columns = ('ID', 'Tavolo', 'Persone', 'Cameriere', 'Stato', 'Ora', 'Portate', 'Prezzi', 'Totale', 'Sconto', 'Totale Finale')
+        # Treeview con TUTTE le colonne (aggiunto Reminder Status)
+        columns = ('ID', 'Tavolo', 'Persone', 'Cameriere', 'Stato', 'Reminder', 'Ora', 'Portate', 'Prezzi', 'Totale', 'Sconto', 'Totale Finale')
         self.orders_tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
                                         yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
         # Configura colonne
         col_widths = {'ID': 50, 'Tavolo': 70, 'Persone': 70, 'Cameriere': 120, 'Stato': 100,
-                     'Ora': 80, 'Portate': 250, 'Prezzi': 150, 'Totale': 80, 'Sconto': 80, 'Totale Finale': 100}
+                     'Reminder': 120, 'Ora': 80, 'Portate': 250, 'Prezzi': 150, 'Totale': 80, 'Sconto': 80, 'Totale Finale': 100}
         
         for col in columns:
             self.orders_tree.heading(col, text=col)
@@ -2930,9 +2959,54 @@ class AdminConsole:
                 if tag not in ['inserito', 'preparato', 'in_consegna', 'pagato']:
                     tag = 'even' if idx % 2 == 0 else 'odd'
             
+            # Calculate reminder status
+            reminder_status = ""
+            if order['status'] in ['inserito', 'preparato']:
+                try:
+                    order_time = datetime.fromisoformat(order['timestamp'])
+                    elapsed_minutes = (datetime.now() - order_time).total_seconds() / 60
+                    
+                    tipo = order.get('tipo_consegna', 'CD')
+                    
+                    # CI timeout: 10 min
+                    # CD inserito timeout: 25 min
+                    # CD preparato timeout: 5 min
+                    if tipo == 'CI' and order['status'] == 'inserito':
+                        if elapsed_minutes >= 10:
+                            if order.get('reminder_sent'):
+                                reminder_status = f"🔔 {int(elapsed_minutes)}min"
+                            else:
+                                reminder_status = f"⚠️ {int(elapsed_minutes)}min"
+                        else:
+                            reminder_status = f"⏱️ {int(elapsed_minutes)}min"
+                    elif tipo == 'CD' and order['status'] == 'inserito':
+                        if elapsed_minutes >= 25:
+                            if order.get('needs_kitchen_reminder'):
+                                reminder_status = f"🔥 {int(elapsed_minutes)}min"
+                            else:
+                                reminder_status = f"⚠️ {int(elapsed_minutes)}min"
+                        else:
+                            reminder_status = f"⏱️ {int(elapsed_minutes)}min"
+                    elif tipo == 'CD' and order['status'] == 'preparato':
+                        if order.get('prepared_timestamp'):
+                            prepared_time = datetime.fromisoformat(order['prepared_timestamp'])
+                            prepared_elapsed = (datetime.now() - prepared_time).total_seconds() / 60
+                            if prepared_elapsed >= 5:
+                                if order.get('prepared_reminder_sent'):
+                                    reminder_status = f"🔔 {int(prepared_elapsed)}min"
+                                else:
+                                    reminder_status = f"🔥 {int(prepared_elapsed)}min"
+                            else:
+                                reminder_status = f"⏱️ {int(prepared_elapsed)}min"
+                except:
+                    reminder_status = "-"
+            else:
+                reminder_status = "-"
+            
             self.orders_tree.insert('', 'end', iid=order['id'],
                                    values=(order['id'], table_display, order['num_people'],
                                           order['waiter_name'], order['status'].replace('_', ' ').title(),
+                                          reminder_status,
                                           time_str, dishes[:40] + '...' if len(dishes) > 40 else dishes,
                                           prices[:30] + '...' if len(prices) > 30 else prices,
                                            f"€{total:.2f}", f"-€{discount:.2f}" if discount > 0 else "-",
@@ -3206,14 +3280,15 @@ DETTAGLIO ORDINE
         tk.Label(scrollable_frame, text="Seleziona i prodotti da ricordare", 
                 font=('Arial', 14, 'bold'), bg=COLORS['background']).pack(pady=15)
         
-        # Get all pending order items (status = 'inserito')
+        # Get all pending order items with status info
         conn = self.database.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT DISTINCT oi.id, oi.order_id, oi.menu_item_name, oi.tipo, oi.quantity, o.table_number
+            SELECT DISTINCT oi.id, oi.order_id, oi.menu_item_name, oi.tipo, oi.quantity, 
+                   o.table_number, o.status, o.waiter
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.id
-            WHERE oi.status = 'inserito' OR oi.status IS NULL
+            WHERE o.status IN ('inserito', 'preparato')
             ORDER BY o.table_number, oi.tipo, oi.menu_item_name
         """)
         items = cursor.fetchall()
@@ -3229,17 +3304,26 @@ DETTAGLIO ORDINE
         
         # Product list with checkboxes
         checkbox_vars = {}
+        item_info = {}  # Store item details for recipient auto-selection
+        
         for item in items:
-            item_id, order_id, name, tipo, quantity, table = item
+            item_id, order_id, name, tipo, quantity, table, order_status, waiter = item
             icon = '🥤' if tipo == 'CI' else '🍽️'
+            status_icon = '🔥' if order_status == 'preparato' else '📝'
             
             item_frame = tk.Frame(scrollable_frame, bg='white', relief='solid', borderwidth=1)
             item_frame.pack(fill='x', padx=10, pady=3)
             
             var = tk.BooleanVar()
             checkbox_vars[item_id] = var
+            item_info[item_id] = {
+                'status': order_status,
+                'waiter': waiter,
+                'order_id': order_id
+            }
             
-            cb = tk.Checkbutton(item_frame, text=f"{icon} Tavolo {table} - {name} (x{quantity})", 
+            cb = tk.Checkbutton(item_frame, 
+                              text=f"{status_icon} {icon} Tavolo {table} - {name} (x{quantity}) [{order_status}]", 
                               variable=var, font=('Arial', 11), bg='white',
                               anchor='w')
             cb.pack(side='left', fill='x', expand=True, padx=10, pady=8)
@@ -3257,6 +3341,22 @@ DETTAGLIO ORDINE
         tk.Radiobutton(recipient_frame, text="👔 Cameriere", variable=recipient_var, 
                       value='waiter', font=('Arial', 11), bg=COLORS['background']).pack(side='left', padx=15)
         
+        # Auto-select recipient based on selected items
+        def update_recipient_selection(*args):
+            """Auto-select recipient: waiter if any preparato, else kitchen"""
+            selected_items = [item_id for item_id, var in checkbox_vars.items() if var.get()]
+            if selected_items:
+                # Check if any selected item is preparato
+                has_preparato = any(item_info[item_id]['status'] == 'preparato' for item_id in selected_items)
+                if has_preparato:
+                    recipient_var.set('waiter')
+                else:
+                    recipient_var.set('kitchen')
+        
+        # Bind checkbox changes to auto-selection
+        for var in checkbox_vars.values():
+            var.trace('w', update_recipient_selection)
+        
         # Buttons
         def send_reminder():
             selected_items = [item_id for item_id, var in checkbox_vars.items() if var.get()]
@@ -3267,15 +3367,28 @@ DETTAGLIO ORDINE
             
             recipient = recipient_var.get()
             
-            # Emit via Socket.IO
+            # Emit via Socket.IO to correct room
             try:
-                if hasattr(self.parent, 'flask_server') and self.parent.flask_server:
-                    self.parent.flask_server.socketio.emit('manual_reminder', {
+                if recipient == 'kitchen':
+                    # Broadcast to kitchen room
+                    self.socketio.emit('manual_reminder', {
                         'item_ids': selected_items,
                         'recipient': recipient,
-                        'timestamp': datetime.now().isoformat()
-                    }, namespace='/')
-                    logger.info(f"Manual reminder sent for {len(selected_items)} items to {recipient}")
+                        'timestamp': datetime.now().isoformat(),
+                        'message': f"🔔 Reminder manuale: {len(selected_items)} prodotti da preparare"
+                    }, room='kitchen')
+                    logger.info(f"📤 Manual reminder sent to kitchen: {len(selected_items)} items")
+                else:
+                    # Send to specific waiters
+                    waiters = set(item_info[item_id]['waiter'] for item_id in selected_items)
+                    for waiter in waiters:
+                        self.socketio.emit('manual_reminder', {
+                            'item_ids': selected_items,
+                            'recipient': 'waiter',
+                            'timestamp': datetime.now().isoformat(),
+                            'message': f"🔔 Reminder: Ordini pronti da ritirare"
+                        }, room=f"waiter_{waiter}")
+                        logger.info(f"📤 Manual reminder sent to waiter {waiter}")
                 
                 messagebox.showinfo("✅ Successo", f"Reminder inviato a {recipient}\n{len(selected_items)} prodotti selezionati")
                 dialog.destroy()
@@ -6047,9 +6160,11 @@ class LaComanda:
             except Exception as e:
                 logger.debug(f"Nessun tunnel da chiudere: {e}")
             
-            # Avvia nuovo tunnel
-            logger.info("Avvio tunnel ngrok...")
-            public_url = ngrok.connect(PORT, bind_tls=True)
+            # Avvia nuovo tunnel con pooling enabled per evitare errori "endpoint already in use"
+            logger.info("Avvio tunnel ngrok con pooling enabled...")
+            from pyngrok.conf import PyngrokConfig
+            pyngrok_config = PyngrokConfig(region='us')  # Can be configured based on location
+            public_url = ngrok.connect(PORT, bind_tls=True, pyngrok_config=pyngrok_config)
             logger.info(f"✅ Tunnel attivo: {public_url.public_url}")
             return public_url.public_url
             

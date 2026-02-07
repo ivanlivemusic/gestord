@@ -394,7 +394,12 @@
         // Socket.IO listeners
         socket.on('connect', () => {
             console.log('Connected to server');
+            socket.emit('join_kitchen_room');
             loadOrders();
+        });
+        
+        socket.on('room_joined', (data) => {
+            console.log('Joined room:', data.room);
         });
 
         socket.on('new_order', () => {
@@ -403,6 +408,11 @@
 
         socket.on('order_updated', () => {
             loadOrders();
+        });
+        
+        socket.on('kitchen_urgent_reminder', (data) => {
+            console.log('🔥 Kitchen urgent reminder received:', data);
+            loadOrders(); // Refresh to show in REMINDER column
         });
 
         // Refresh every 30 seconds
