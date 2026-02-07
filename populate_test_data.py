@@ -2,6 +2,10 @@
 """
 Test Data Population Script for La Comanda
 Generates 80-100 realistic orders with various states, times, and scenarios
+
+⚠️  WARNING: This script is for TEST/DEVELOPMENT purposes ONLY!
+⚠️  All user credentials use a simple test password ("test") and must NEVER be used in production.
+⚠️  In production, use strong passwords and proper password hashing.
 """
 
 import sqlite3
@@ -11,17 +15,22 @@ import json
 
 DB_NAME = 'lacomanda.db'
 
+# ⚠️  TEST CREDENTIALS - DO NOT USE IN PRODUCTION
+# All users have password "test" with a simple hash for testing purposes
+TEST_PASSWORD_HASH = 'pbkdf2:sha256:260000$test$test'
+
 # Sample data
 WAITERS = [
-    {'name': 'Mario', 'username': 'mario', 'password_hash': 'pbkdf2:sha256:260000$test$test'},
-    {'name': 'Luigi', 'username': 'luigi', 'password_hash': 'pbkdf2:sha256:260000$test$test'},
-    {'name': 'Anna', 'username': 'anna', 'password_hash': 'pbkdf2:sha256:260000$test$test'},
-    {'name': 'Sofia', 'username': 'sofia', 'password_hash': 'pbkdf2:sha256:260000$test$test'}
+    {'name': 'Mario', 'username': 'mario', 'password_hash': TEST_PASSWORD_HASH},
+    {'name': 'Luigi', 'username': 'luigi', 'password_hash': TEST_PASSWORD_HASH},
+    {'name': 'Anna', 'username': 'anna', 'password_hash': TEST_PASSWORD_HASH},
+    {'name': 'Sofia', 'username': 'sofia', 'password_hash': TEST_PASSWORD_HASH}
 ]
 
 KITCHEN_USERS = [
-    {'username': 'chef', 'full_name': 'Chef Antonio', 'password_hash': 'pbkdf2:sha256:260000$test$test'},
-    {'username': 'sous', 'full_name': 'Sous Chef Maria', 'password_hash': 'pbkdf2:sha256:260000$test$test'}
+    {'username': 'chef', 'full_name': 'Chef Antonio', 'password_hash': TEST_PASSWORD_HASH},
+    {'username': 'sous', 'full_name': 'Sous Chef Maria', 'password_hash': TEST_PASSWORD_HASH}
+]
 ]
 
 MENU_ITEMS_CI = [
@@ -402,35 +411,46 @@ def generate_orders(conn):
 
 def update_config_file():
     """Update LaComanda.conf with business info"""
-    config_content = """[company_info]
-name = Ristorante La Comanda
-address = Via Roma 123, 00100 Roma
-phone = +39 06 1234567
-email = info@lacomanda.it
-vat = IT12345678901
-description = Autentica cucina italiana
-
-[business_hours]
-mode = double
-slot1_start = 12:00
-slot1_end = 15:00
-slot2_start = 19:00
-slot2_end = 23:30
-
-[Reminders]
-ci_timeout = 10
-cd_timeout = 25
-cd_prepared_timeout = 5
-auto_reminder_enabled = true
-reminder_sound = true
-
-[Ngrok]
-authtoken = 
-enabled = false
-"""
+    import configparser
+    
+    config = configparser.ConfigParser()
+    
+    # Company information
+    config['company_info'] = {
+        'name': 'Ristorante La Comanda',
+        'address': 'Via Roma 123, 00100 Roma',
+        'phone': '+39 06 1234567',
+        'email': 'info@lacomanda.it',
+        'vat': 'IT12345678901',
+        'description': 'Autentica cucina italiana'
+    }
+    
+    # Business hours
+    config['business_hours'] = {
+        'mode': 'double',
+        'slot1_start': '12:00',
+        'slot1_end': '15:00',
+        'slot2_start': '19:00',
+        'slot2_end': '23:30'
+    }
+    
+    # Reminder settings
+    config['Reminders'] = {
+        'ci_timeout': '10',
+        'cd_timeout': '25',
+        'cd_prepared_timeout': '5',
+        'auto_reminder_enabled': 'true',
+        'reminder_sound': 'true'
+    }
+    
+    # Ngrok settings (disabled by default)
+    config['Ngrok'] = {
+        'authtoken': '',
+        'enabled': 'false'
+    }
     
     with open('LaComanda.conf', 'w', encoding='utf-8') as f:
-        f.write(config_content)
+        config.write(f)
     
     print("\n✅ Updated LaComanda.conf with business info")
 

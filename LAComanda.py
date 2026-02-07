@@ -3077,7 +3077,12 @@ class AdminConsole:
                                   tags=(tag,))
     
     def change_order_status(self):
-        """Cambia stato ordine - ONLY allows consegnato → pagato from admin"""
+        """Cambia stato ordine - ONLY allows consegnato → pagato from admin
+        
+        NOTE: User messages are in Italian as this is an Italian restaurant system.
+        For internationalization support, consider externalizing all UI strings
+        to a separate resource file (e.g., using gettext or a simple JSON mapping).
+        """
         selection = self.orders_tree.selection()
         if not selection:
             messagebox.showwarning("Attenzione", "Seleziona un ordine")
