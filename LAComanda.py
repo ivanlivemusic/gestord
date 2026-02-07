@@ -1723,16 +1723,18 @@ class WebApp:
         
         @self.app.route('/lacomanda/api/modification-request/<int:request_id>/process', methods=['POST'])
         def process_modification_request(request_id):
-            """Process (approve/reject) a modification request"""
-            # Only admin or kitchen users can process
-            if 'kitchen_user_id' not in session:
-                # Check if it's admin console (no session check needed for admin)
+            """Process (approve/reject) a modification request - Kitchen or Admin only"""
+            # Check authorization: must be either kitchen user or admin console
+            is_kitchen = 'kitchen_user_id' in session
+            is_admin = request.headers.get('X-Admin-Console') == 'true'
+            
+            if not is_kitchen and not is_admin:
                 return jsonify({'success': False, 'error': 'Non autorizzato'}), 403
             
             try:
                 data = request.get_json()
                 approved = data.get('approved', False)
-                processed_by = session.get('kitchen_full_name', 'Admin')
+                processed_by = session.get('kitchen_full_name', 'Admin') if is_kitchen else 'Admin'
                 
                 success = self.database.process_modification_request(request_id, approved, processed_by)
                 
@@ -3330,6 +3332,21 @@ DETTAGLIO ORDINE
                     messagebox.showerror("Errore", "Tipo deve essere CD o CI")
                     return
                 
+                # Validate variants format if provided
+                varianti_str = fields['Varianti (es: "Piccola:5.00,Media:7.00,Grande:9.00")'].get()
+                if varianti_str.strip():
+                    try:
+                        # Validate format: "Name:Price,Name:Price"
+                        parts = varianti_str.split(',')
+                        for part in parts:
+                            if ':' not in part:
+                                raise ValueError("Formato varianti non valido")
+                            name, price = part.split(':', 1)
+                            float(price.strip())  # Validate price is numeric
+                    except Exception as e:
+                        messagebox.showerror("Errore", f"Formato varianti non valido. Usa: 'Nome:Prezzo,Nome:Prezzo'\nErrore: {str(e)}")
+                        return
+                
                 # Get menu item id after adding
                 conn = self.database.get_connection()
                 cursor = conn.cursor()
@@ -3339,7 +3356,7 @@ DETTAGLIO ORDINE
                     (fields['Categoria'].get(), fields['Nome'].get(), float(fields['Prezzo'].get()),
                      fields['Sottocategoria'].get(), fields['Descrizione'].get(), tipo,
                      fields['Allergeni (separati da virgola)'].get(), 
-                     fields['Varianti (es: "Piccola:5.00,Media:7.00,Grande:9.00")'].get())
+                     varianti_str.strip() if varianti_str.strip() else None)
                 )
                 conn.commit()
                 conn.close()
