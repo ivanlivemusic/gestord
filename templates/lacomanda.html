@@ -762,6 +762,12 @@
                 <label>📝 Note Ordine</label>
                 <textarea id="orderNotes" rows="2" placeholder="Allergie, preferenze..."></textarea>
             </div>
+            <div class="info-field" style="margin-top: 10px;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="quickService" style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+                    <span>⚡ Servizio Rapido (priorità massima)</span>
+                </label>
+            </div>
         </div>
         
         <!-- Order Type Selection -->
@@ -967,6 +973,7 @@
             const numPeople = document.getElementById('numPeople').value;
             const notes = document.getElementById('orderNotes').value;
             const orderType = document.querySelector('input[name="orderType"]:checked').value;
+            const quickService = document.getElementById('quickService').checked;
             
             // Determine actual order type (rapid or takeaway)
             let actualOrderType = orderType;
@@ -993,6 +1000,7 @@
                 num_people: parseInt(numPeople) || 1,
                 notes: notes,
                 order_type: actualOrderType,
+                quick_service: quickService,
                 items: Object.values(cart)
             };
             
