@@ -4,6 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>La Comanda - Gestione Ordini</title>
+    
+    <!-- PWA Support -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#3498DB">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="LA COMANDA">
+    
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         :root {
@@ -762,6 +770,12 @@
                 <label>📝 Note Ordine</label>
                 <textarea id="orderNotes" rows="2" placeholder="Allergie, preferenze..."></textarea>
             </div>
+            <div class="info-field" style="margin-top: 10px;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="quickService" style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+                    <span>⚡ Servizio Rapido (priorità massima)</span>
+                </label>
+            </div>
         </div>
         
         <!-- Order Type Selection -->
@@ -967,6 +981,7 @@
             const numPeople = document.getElementById('numPeople').value;
             const notes = document.getElementById('orderNotes').value;
             const orderType = document.querySelector('input[name="orderType"]:checked').value;
+            const quickService = document.getElementById('quickService').checked;
             
             // Determine actual order type (rapid or takeaway)
             let actualOrderType = orderType;
@@ -993,6 +1008,7 @@
                 num_people: parseInt(numPeople) || 1,
                 notes: notes,
                 order_type: actualOrderType,
+                quick_service: quickService,
                 items: Object.values(cart)
             };
             
@@ -1156,6 +1172,9 @@
                             <button onclick="pickupOrder(${order.id})" class="btn-pickup">
                                 ✅ Ritira e Consegna al Tavolo
                             </button>
+                            <button onclick="requestModification(${order.id})" class="btn-modify" style="background: #FF9800; margin-top: 5px;">
+                                ✏️ Richiedi Modifica
+                            </button>
                         `;
                         
                         container.appendChild(card);
@@ -1190,6 +1209,36 @@
                 showNotification('❌ Errore di rete', '#E74C3C');
                 console.error('Errore pickup:', err);
             });
+        }
+        
+        // Request modification for an order
+        function requestModification(orderId) {
+            const reason = prompt('Motivo della modifica richiesta:');
+            if (!reason || reason.trim() === '') {
+                return;
+            }
+            
+            fetch('/lacomanda/api/modification-request', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    order_id: orderId,
+                    request_type: 'modify',
+                    request_data: reason
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification('✅ Richiesta di modifica inviata!', '#2ECC71');
+                    } else {
+                        showNotification('⚠️ Errore nell\'invio', '#E74C3C');
+                    }
+                })
+                .catch(err => {
+                    console.error('Errore:', err);
+                    showNotification('⚠️ Errore nell\'invio', '#E74C3C');
+                });
         }
         
         // Play notification sound
@@ -1231,6 +1280,17 @@
 
         // Set initial icon
         document.querySelector('.theme-icon').textContent = savedTheme === 'dark' ? '☀️' : '🌙';
+        
+        // PWA Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/js/service-worker.js')
+                .then(registration => {
+                    console.log('Service Worker registered:', registration);
+                })
+                .catch(error => {
+                    console.log('Service Worker registration failed:', error);
+                });
+        }
     </script>
 </body>
 </html>

@@ -1,0 +1,11 @@
+{
+  "name": "LA COMANDA - Sistema Gestione Ordini",
+  "short_name": "LA COMANDA",
+  "description": "Sistema professionale di gestione ordini per ristoranti",
+  "start_url": "/lacomanda/cameriere",
+  "display": "standalone",
+  "background_color": "#2C3E50",
+  "theme_color": "#3498DB",
+  "orientation": "portrait",
+  "categories": ["business", "productivity"]
+}

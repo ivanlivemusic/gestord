@@ -436,6 +436,10 @@ class Database:
                 cursor.execute("ALTER TABLE orders ADD COLUMN needs_kitchen_reminder INTEGER DEFAULT 0")
                 conn.commit()
             
+            if 'quick_service' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN quick_service INTEGER DEFAULT 0")
+                conn.commit()
+            
             # Verifica colonne tabella menu_items
             cursor.execute("PRAGMA table_info(menu_items)")
             menu_columns = {row[1] for row in cursor.fetchall()}
@@ -452,12 +456,20 @@ class Database:
                 cursor.execute("ALTER TABLE menu_items ADD COLUMN note_dietetiche TEXT")
                 conn.commit()
             
+            if 'varianti' not in menu_columns:
+                cursor.execute("ALTER TABLE menu_items ADD COLUMN varianti TEXT")
+                conn.commit()
+            
             # Verifica colonne tabella order_items
             cursor.execute("PRAGMA table_info(order_items)")
             item_columns = {row[1] for row in cursor.fetchall()}
             
             if 'tipo' not in item_columns:
                 cursor.execute("ALTER TABLE order_items ADD COLUMN tipo TEXT DEFAULT 'CD'")
+                conn.commit()
+            
+            if 'variante_scelta' not in item_columns:
+                cursor.execute("ALTER TABLE order_items ADD COLUMN variante_scelta TEXT")
                 conn.commit()
             
             if 'status' not in item_columns:
@@ -621,8 +633,8 @@ class Database:
         conn.commit()
         conn.close()
     
-    def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes="", order_type="normal"):
-        """Crea nuovo ordine con gestione errori e supporto per order_type (normal/rapid/takeaway)"""
+    def create_order(self, table_number, num_people, waiter_id, waiter_name, items, notes="", order_type="normal", quick_service=False):
+        """Crea nuovo ordine con gestione errori e supporto per order_type (normal/rapid/takeaway) e quick_service"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
@@ -642,19 +654,29 @@ class Database:
                 pickup_number = (max_pickup or 0) + 1
             
             cursor.execute(
-                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status, order_type, pickup_number)
-                   VALUES (?, ?, ?, ?, ?, ?, 'inserito', ?, ?)""",
-                (table_number, num_people, waiter_id, waiter_name, timestamp, notes, order_type, pickup_number)
+                """INSERT INTO orders (table_number, num_people, waiter_id, waiter_name, timestamp, notes, status, order_type, pickup_number, quick_service)
+                   VALUES (?, ?, ?, ?, ?, ?, 'inserito', ?, ?, ?)""",
+                (table_number, num_people, waiter_id, waiter_name, timestamp, notes, order_type, pickup_number, 1 if quick_service else 0)
             )
             
             order_id = cursor.lastrowid
             
             for item in items:
+                # Fetch tipo from menu_items table
+                menu_item_id = item.get('menu_item_id', 0)
+                tipo = 'CD'  # Default
+                
+                if menu_item_id > 0:
+                    cursor.execute("SELECT tipo FROM menu_items WHERE id = ?", (menu_item_id,))
+                    result = cursor.fetchone()
+                    if result:
+                        tipo = result[0]
+                
                 cursor.execute(
-                    """INSERT INTO order_items (order_id, menu_item_id, menu_item_name, quantity, price, categoria)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (order_id, item.get('menu_item_id', 0), item.get('nome', ''), 
-                     item.get('quantity', 1), item.get('prezzo', 0.0), item.get('categoria', ''))
+                    """INSERT INTO order_items (order_id, menu_item_id, menu_item_name, quantity, price, categoria, tipo)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (order_id, menu_item_id, item.get('nome', ''), 
+                     item.get('quantity', 1), item.get('prezzo', 0.0), item.get('categoria', ''), tipo)
                 )
             
             conn.commit()
@@ -1531,7 +1553,10 @@ class WebApp:
                     safe_session = {k: v for k, v in session.items() if k not in ['password', 'token', 'secret']}
                     logger.warning(f"Order creation with 'Unknown' waiter name - potential session issue. Session keys: {list(safe_session.keys())}")
                 
-                # Create order with order_type
+                # Get quick_service flag
+                quick_service = data.get('quick_service', False)
+                
+                # Create order with order_type and quick_service
                 order_id = self.database.create_order(
                     table_number,
                     num_people,
@@ -1539,7 +1564,8 @@ class WebApp:
                     waiter_name,
                     items,
                     notes,
-                    order_type=order_type
+                    order_type=order_type,
+                    quick_service=quick_service
                 )
                 
                 logger.info(f"Ordine creato con successo: ID={order_id}, Tipo={order_type}, Tavolo={table_number}, Cameriere={waiter_name}")
@@ -1655,6 +1681,78 @@ class WebApp:
             except Exception as e:
                 logger.error(f"Error picking up order: {e}")
                 return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/lacomanda/api/modification-request', methods=['POST'])
+        def create_modification_request():
+            """Create a modification request"""
+            if 'user_id' not in session and 'waiter_id' not in session:
+                return jsonify({'success': False, 'error': 'Non autenticato'}), 401
+            
+            try:
+                data = request.get_json()
+                order_id = data.get('order_id')
+                request_type = data.get('request_type', 'modify')
+                request_data = data.get('request_data', '')
+                requested_by = session.get('full_name', session.get('username', 'Unknown'))
+                
+                if not order_id:
+                    return jsonify({'success': False, 'error': 'Order ID mancante'}), 400
+                
+                # Create modification request
+                request_id = self.database.create_modification_request(
+                    order_id, requested_by, request_type, request_data
+                )
+                
+                if request_id:
+                    # Emit to admin and kitchen via socketio
+                    self.socketio.emit('modification_request', {
+                        'request_id': request_id,
+                        'order_id': order_id,
+                        'requested_by': requested_by,
+                        'request_type': request_type,
+                        'request_data': request_data
+                    }, namespace='/')
+                    
+                    return jsonify({'success': True, 'request_id': request_id})
+                else:
+                    return jsonify({'success': False, 'error': 'Errore creazione richiesta'}), 500
+                    
+            except Exception as e:
+                logger.error(f"Error creating modification request: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/lacomanda/api/modification-request/<int:request_id>/process', methods=['POST'])
+        def process_modification_request(request_id):
+            """Process (approve/reject) a modification request - Kitchen or Admin only"""
+            # Check authorization: must be either kitchen user or admin console
+            is_kitchen = 'kitchen_user_id' in session
+            is_admin = request.headers.get('X-Admin-Console') == 'true'
+            
+            if not is_kitchen and not is_admin:
+                return jsonify({'success': False, 'error': 'Non autorizzato'}), 403
+            
+            try:
+                data = request.get_json()
+                approved = data.get('approved', False)
+                processed_by = session.get('kitchen_full_name', 'Admin') if is_kitchen else 'Admin'
+                
+                success = self.database.process_modification_request(request_id, approved, processed_by)
+                
+                if success:
+                    # Emit notification
+                    self.socketio.emit('modification_processed', {
+                        'request_id': request_id,
+                        'approved': approved,
+                        'processed_by': processed_by
+                    }, namespace='/')
+                    
+                    return jsonify({'success': True, 'approved': approved})
+                else:
+                    return jsonify({'success': False, 'error': 'Errore processamento'}), 500
+                    
+            except Exception as e:
+                logger.error(f"Error processing modification request: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
     
     def setup_socketio(self):
         """Configura eventi SocketIO"""
@@ -2269,6 +2367,16 @@ class AdminConsole:
             logger.info(f"📝 Order status changed: #{data.get('order_id')} -> {data.get('status')}")
             self.window.after(0, self.refresh_orders)
         
+        @self.sio_client.on('modification_request')
+        def on_modification_request(data):
+            logger.info(f"🔔 Modification request received: #{data.get('request_id')}")
+            self.window.after(0, lambda: self.show_modification_request_popup(data))
+        
+        @self.sio_client.on('manual_reminder')
+        def on_manual_reminder(data):
+            logger.info(f"📤 Manual reminder received: {len(data.get('item_ids', []))} items")
+            self.window.after(0, lambda: self.show_notification(f"Reminder manuale inviato: {len(data.get('item_ids', []))} prodotti"))
+        
         # Try to connect
         try:
             server_url = f'http://localhost:{PORT}'
@@ -2304,6 +2412,114 @@ class AdminConsole:
             notif.after(3000, notif.destroy)
         except Exception as e:
             logger.error(f"Error showing notification: {e}")
+    
+    def show_modification_request_popup(self, data):
+        """Show modification request popup for admin approval"""
+        request_id = data.get('request_id')
+        order_id = data.get('order_id')
+        requested_by = data.get('requested_by')
+        request_type = data.get('request_type')
+        request_data = data.get('request_data')
+        
+        # Create modal dialog
+        dialog = tk.Toplevel(self.window)
+        dialog.title("🔔 Richiesta Modifica Ordine")
+        dialog.geometry("550x400")
+        dialog.configure(bg=COLORS['background'])
+        dialog.attributes('-topmost', True)
+        dialog.grab_set()
+        
+        # Header
+        header = tk.Frame(dialog, bg='#FF9800', height=80)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        
+        tk.Label(header, text="🔔 Richiesta di Modifica", font=('Arial', 18, 'bold'),
+                bg='#FF9800', fg='white').pack(pady=20)
+        
+        # Content
+        content = tk.Frame(dialog, bg=COLORS['background'])
+        content.pack(fill='both', expand=True, padx=30, pady=20)
+        
+        info_fields = [
+            ('Ordine #:', str(order_id)),
+            ('Richiesta da:', requested_by),
+            ('Tipo:', request_type),
+            ('Dettagli:', request_data)
+        ]
+        
+        for label, value in info_fields:
+            row = tk.Frame(content, bg=COLORS['background'])
+            row.pack(fill='x', pady=8)
+            
+            tk.Label(row, text=label, font=('Arial', 12, 'bold'),
+                    bg=COLORS['background'], anchor='w', width=15).pack(side='left')
+            tk.Label(row, text=value, font=('Arial', 12),
+                    bg=COLORS['background'], anchor='w').pack(side='left', fill='x', expand=True)
+        
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=COLORS['background'])
+        btn_frame.pack(fill='x', padx=30, pady=20)
+        
+        def approve():
+            # For admin console, we approve directly without session check
+            try:
+                conn = self.database.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE modification_requests SET status = 'approved', processed_at = datetime('now') WHERE id = ?",
+                    (request_id,)
+                )
+                conn.commit()
+                conn.close()
+                
+                # Emit notification
+                if hasattr(self.parent, 'flask_server') and self.parent.flask_server:
+                    self.parent.flask_server.socketio.emit('modification_processed', {
+                        'request_id': request_id,
+                        'approved': True,
+                        'processed_by': 'Admin'
+                    }, namespace='/')
+                
+                messagebox.showinfo("✅ Approvato", "Richiesta di modifica approvata")
+                dialog.destroy()
+                self.refresh_orders()
+            except Exception as e:
+                logger.error(f"Error approving modification: {e}")
+                messagebox.showerror("Errore", f"Errore approvazione: {str(e)}")
+        
+        def reject():
+            try:
+                conn = self.database.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE modification_requests SET status = 'rejected', processed_at = datetime('now') WHERE id = ?",
+                    (request_id,)
+                )
+                conn.commit()
+                conn.close()
+                
+                # Emit notification
+                if hasattr(self.parent, 'flask_server') and self.parent.flask_server:
+                    self.parent.flask_server.socketio.emit('modification_processed', {
+                        'request_id': request_id,
+                        'approved': False,
+                        'processed_by': 'Admin'
+                    }, namespace='/')
+                
+                messagebox.showinfo("❌ Rifiutato", "Richiesta di modifica rifiutata")
+                dialog.destroy()
+            except Exception as e:
+                logger.error(f"Error rejecting modification: {e}")
+                messagebox.showerror("Errore", f"Errore rifiuto: {str(e)}")
+        
+        tk.Button(btn_frame, text="✅ APPROVA", command=approve,
+                 font=('Arial', 14, 'bold'), bg='#4CAF50', fg='white',
+                 padx=30, pady=15, relief='flat').pack(side='left', padx=10, expand=True, fill='x')
+        
+        tk.Button(btn_frame, text="❌ RIFIUTA", command=reject,
+                 font=('Arial', 14, 'bold'), bg='#F44336', fg='white',
+                 padx=30, pady=15, relief='flat').pack(side='left', padx=10, expand=True, fill='x')
     
     def start_auto_refresh(self):
         """Start auto-refresh timer as fallback"""
@@ -2408,6 +2624,10 @@ class AdminConsole:
                  font=('Arial', 10, 'bold'), padx=15, pady=8,
                  command=self.open_statistics_window).pack(side='left', padx=5)
         
+        tk.Button(toolbar, text="📤 Invia Reminder", bg="#FF5722", fg="white",
+                 font=('Arial', 10, 'bold'), padx=15, pady=8,
+                 command=self.show_manual_reminder_dialog).pack(side='left', padx=5)
+        
         # Connection indicator
         self.connection_indicator = tk.Label(toolbar, text="🟠 Connecting...", 
                                              fg='orange', font=('Arial', 9, 'bold'))
@@ -2429,6 +2649,23 @@ class AdminConsole:
             frame.pack_propagate(False)
             tk.Label(legend_frame, text=state.replace('_', ' ').title(), font=('Arial', 9),
                     bg=COLORS['background']).pack(side='left', padx=(0, 15))
+        
+        # Filter toolbar
+        filter_frame = tk.Frame(orders_frame, bg=COLORS['background'])
+        filter_frame.pack(fill='x', padx=20, pady=5)
+        
+        tk.Label(filter_frame, text="Filtri:", font=('Arial', 10, 'bold'),
+                bg=COLORS['background']).pack(side='left', padx=10)
+        
+        self.filter_quick_service = tk.BooleanVar(value=False)
+        tk.Checkbutton(filter_frame, text="⚡ Solo Servizio Rapido", variable=self.filter_quick_service,
+                      font=('Arial', 9), bg=COLORS['background'],
+                      command=self.refresh_orders).pack(side='left', padx=5)
+        
+        self.filter_normal_service = tk.BooleanVar(value=False)
+        tk.Checkbutton(filter_frame, text="🍽️ Solo Servizio Normale", variable=self.filter_normal_service,
+                      font=('Arial', 9), bg=COLORS['background'],
+                      command=self.refresh_orders).pack(side='left', padx=5)
         
         # Treeview con scrollbar
         tree_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2473,6 +2710,8 @@ class AdminConsole:
         # Order type colors
         self.orders_tree.tag_configure('rapid', background='#E3F2FD')
         self.orders_tree.tag_configure('takeaway', background='#FFF3E0')
+        # Quick service color
+        self.orders_tree.tag_configure('quick_service', background='#FFE082')
         
         # Frame cambio stato
         status_frame = tk.Frame(orders_frame, bg=COLORS['background'])
@@ -2625,13 +2864,19 @@ class AdminConsole:
         self.refresh_daily_menu()
     
     def refresh_orders(self):
-        """Aggiorna lista ordini con supporto order_type e pickup_number"""
+        """Aggiorna lista ordini con supporto order_type, pickup_number e quick_service"""
         # Pulisci tree
         for item in self.orders_tree.get_children():
             self.orders_tree.delete(item)
         
         # Carica ordini
         orders = self.database.get_all_orders()
+        
+        # Apply filters
+        if hasattr(self, 'filter_quick_service') and self.filter_quick_service.get():
+            orders = [o for o in orders if o.get('quick_service', 0) == 1]
+        elif hasattr(self, 'filter_normal_service') and self.filter_normal_service.get():
+            orders = [o for o in orders if o.get('quick_service', 0) == 0]
         
         for idx, order in enumerate(orders):
             # Calcola totale
@@ -2660,9 +2905,10 @@ class AdminConsole:
             except:
                 time_str = order['timestamp'][:5] if len(order['timestamp']) > 5 else order['timestamp']
             
-            # Determine tag based on order_type and status
+            # Determine tag based on order_type, quick_service and status
             order_type = order.get('order_type', 'normal')
             pickup_number = order.get('pickup_number')
+            quick_service = order.get('quick_service', 0)
             
             # Add icon prefix for rapid/takeaway orders
             table_display = str(order['table_number'])
@@ -2671,8 +2917,10 @@ class AdminConsole:
             elif order_type == 'takeaway':
                 table_display = f"📦 {pickup_number or table_display}"
             
-            # Determine tag: order_type takes precedence over status for coloring
-            if order_type == 'rapid':
+            # Determine tag: quick_service takes highest precedence
+            if quick_service:
+                tag = 'quick_service'
+            elif order_type == 'rapid':
                 tag = 'rapid'
             elif order_type == 'takeaway':
                 tag = 'takeaway'
@@ -2687,7 +2935,7 @@ class AdminConsole:
                                           order['waiter_name'], order['status'].replace('_', ' ').title(),
                                           time_str, dishes[:40] + '...' if len(dishes) > 40 else dishes,
                                           prices[:30] + '...' if len(prices) > 30 else prices,
-                                          f"€{total:.2f}", f"-€{discount:.2f}" if discount > 0 else "-",
+                                           f"€{total:.2f}", f"-€{discount:.2f}" if discount > 0 else "-",
                                           f"€{final_total:.2f}"),
                                    tags=(tag,))
     
@@ -2944,47 +3192,188 @@ DETTAGLIO ORDINE
             # TODO: Implementa delete_order nel database
             messagebox.showinfo("Info", "Funzione da implementare")
     
+    def show_manual_reminder_dialog(self):
+        """Show manual reminder dialog with product selection"""
+        # Create dialog with scrollbar
+        scrollable_frame, button_frame, dialog = create_dialog_with_scrollbar(
+            self.window, 
+            "📤 Invia Reminder Manuale", 
+            550, 
+            700
+        )
+        
+        # Title
+        tk.Label(scrollable_frame, text="Seleziona i prodotti da ricordare", 
+                font=('Arial', 14, 'bold'), bg=COLORS['background']).pack(pady=15)
+        
+        # Get all pending order items (status = 'inserito')
+        conn = self.database.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT oi.id, oi.order_id, oi.menu_item_name, oi.tipo, oi.quantity, o.table_number
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            WHERE oi.status = 'inserito' OR oi.status IS NULL
+            ORDER BY o.table_number, oi.tipo, oi.menu_item_name
+        """)
+        items = cursor.fetchall()
+        conn.close()
+        
+        if not items:
+            tk.Label(scrollable_frame, text="Nessun prodotto in attesa", 
+                    font=('Arial', 12), bg=COLORS['background']).pack(pady=20)
+            tk.Button(button_frame, text="Chiudi", command=dialog.destroy,
+                     font=('Arial', 11, 'bold'), bg=COLORS['secondary'], fg='white',
+                     padx=20, pady=8).pack()
+            return
+        
+        # Product list with checkboxes
+        checkbox_vars = {}
+        for item in items:
+            item_id, order_id, name, tipo, quantity, table = item
+            icon = '🥤' if tipo == 'CI' else '🍽️'
+            
+            item_frame = tk.Frame(scrollable_frame, bg='white', relief='solid', borderwidth=1)
+            item_frame.pack(fill='x', padx=10, pady=3)
+            
+            var = tk.BooleanVar()
+            checkbox_vars[item_id] = var
+            
+            cb = tk.Checkbutton(item_frame, text=f"{icon} Tavolo {table} - {name} (x{quantity})", 
+                              variable=var, font=('Arial', 11), bg='white',
+                              anchor='w')
+            cb.pack(side='left', fill='x', expand=True, padx=10, pady=8)
+        
+        # Recipient selector
+        tk.Label(scrollable_frame, text="Destinatario:", font=('Arial', 12, 'bold'),
+                bg=COLORS['background']).pack(pady=(20, 5))
+        
+        recipient_var = tk.StringVar(value='kitchen')
+        recipient_frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
+        recipient_frame.pack()
+        
+        tk.Radiobutton(recipient_frame, text="👨‍🍳 Cucina", variable=recipient_var, 
+                      value='kitchen', font=('Arial', 11), bg=COLORS['background']).pack(side='left', padx=15)
+        tk.Radiobutton(recipient_frame, text="👔 Cameriere", variable=recipient_var, 
+                      value='waiter', font=('Arial', 11), bg=COLORS['background']).pack(side='left', padx=15)
+        
+        # Buttons
+        def send_reminder():
+            selected_items = [item_id for item_id, var in checkbox_vars.items() if var.get()]
+            
+            if not selected_items:
+                messagebox.showwarning("Attenzione", "Seleziona almeno un prodotto")
+                return
+            
+            recipient = recipient_var.get()
+            
+            # Emit via Socket.IO
+            try:
+                if hasattr(self.parent, 'flask_server') and self.parent.flask_server:
+                    self.parent.flask_server.socketio.emit('manual_reminder', {
+                        'item_ids': selected_items,
+                        'recipient': recipient,
+                        'timestamp': datetime.now().isoformat()
+                    }, namespace='/')
+                    logger.info(f"Manual reminder sent for {len(selected_items)} items to {recipient}")
+                
+                messagebox.showinfo("✅ Successo", f"Reminder inviato a {recipient}\n{len(selected_items)} prodotti selezionati")
+                dialog.destroy()
+            except Exception as e:
+                logger.error(f"Error sending manual reminder: {e}")
+                messagebox.showerror("Errore", f"Errore invio reminder: {str(e)}")
+        
+        tk.Button(button_frame, text="📤 Invia Reminder", command=send_reminder,
+                 font=('Arial', 12, 'bold'), bg='#FF5722', fg='white',
+                 padx=30, pady=10).pack(side='left', padx=5)
+        
+        tk.Button(button_frame, text="Annulla", command=dialog.destroy,
+                 font=('Arial', 11), bg=COLORS['secondary'], fg='white',
+                 padx=20, pady=8).pack(side='left', padx=5)
+    
     def add_menu_item(self):
         """Aggiungi item menu"""
-        dialog = tk.Toplevel(self.window)
-        dialog.title("Aggiungi Piatto")
-        dialog.geometry("450x400")
-        dialog.configure(bg=COLORS['background'])
+        scrollable_frame, button_frame, dialog = create_dialog_with_scrollbar(
+            self.window, "➕ Aggiungi Nuovo Piatto", 500, 550
+        )
         
-        tk.Label(dialog, text="➕ Aggiungi Nuovo Piatto", font=('Arial', 16, 'bold'),
+        tk.Label(scrollable_frame, text="➕ Aggiungi Nuovo Piatto", font=('Arial', 16, 'bold'),
                 bg=COLORS['background']).pack(pady=20)
         
-        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
         frame.pack(padx=30, pady=10, fill='both', expand=True)
         
         fields = {}
-        labels = ['Categoria', 'Sottocategoria', 'Nome', 'Prezzo', 'Descrizione']
+        field_defs = [
+            ('Categoria', 'text'),
+            ('Sottocategoria', 'text'),
+            ('Nome', 'text'),
+            ('Prezzo', 'text'),
+            ('Tipo (CD/CI)', 'text'),
+            ('Descrizione', 'text'),
+            ('Allergeni (separati da virgola)', 'text'),
+            ('Varianti (es: "Piccola:5.00,Media:7.00,Grande:9.00")', 'text')
+        ]
         
-        for label in labels:
+        for label, field_type in field_defs:
             tk.Label(frame, text=f"{label}:", font=('Arial', 11),
                     bg=COLORS['background']).pack(anchor='w', pady=(10, 0))
             entry = tk.Entry(frame, font=('Arial', 11), width=40)
             entry.pack(fill='x', pady=5)
             fields[label] = entry
         
+        # Set default CD for Tipo
+        fields['Tipo (CD/CI)'].insert(0, 'CD')
+        
         def save():
             try:
-                self.database.add_menu_item(
-                    fields['Categoria'].get(),
-                    fields['Nome'].get(),
-                    float(fields['Prezzo'].get()),
-                    fields['Sottocategoria'].get(),
-                    fields['Descrizione'].get()
+                tipo = fields['Tipo (CD/CI)'].get().upper()
+                if tipo not in ['CD', 'CI']:
+                    messagebox.showerror("Errore", "Tipo deve essere CD o CI")
+                    return
+                
+                # Validate variants format if provided
+                varianti_str = fields['Varianti (es: "Piccola:5.00,Media:7.00,Grande:9.00")'].get()
+                if varianti_str.strip():
+                    try:
+                        # Validate format: "Name:Price,Name:Price"
+                        parts = varianti_str.split(',')
+                        for part in parts:
+                            if ':' not in part:
+                                raise ValueError("Formato varianti non valido")
+                            name, price = part.split(':', 1)
+                            float(price.strip())  # Validate price is numeric
+                    except Exception as e:
+                        messagebox.showerror("Errore", f"Formato varianti non valido. Usa: 'Nome:Prezzo,Nome:Prezzo'\nErrore: {str(e)}")
+                        return
+                
+                # Get menu item id after adding
+                conn = self.database.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """INSERT INTO menu_items (categoria, nome, prezzo, sottocategoria, descrizione, tipo, allergeni, varianti) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (fields['Categoria'].get(), fields['Nome'].get(), float(fields['Prezzo'].get()),
+                     fields['Sottocategoria'].get(), fields['Descrizione'].get(), tipo,
+                     fields['Allergeni (separati da virgola)'].get(), 
+                     varianti_str.strip() if varianti_str.strip() else None)
                 )
+                conn.commit()
+                conn.close()
+                
                 messagebox.showinfo("✅ Successo", "Piatto aggiunto")
                 dialog.destroy()
                 self.refresh_menu()
             except Exception as e:
                 messagebox.showerror("Errore", str(e))
         
-        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+        tk.Button(button_frame, text="💾 Salva", bg=COLORS['accent'], fg='white',
                  font=('Arial', 11, 'bold'), command=save, relief='flat',
-                 padx=20, pady=8).pack(pady=20)
+                 padx=20, pady=8).pack(side='left', padx=5)
+        
+        tk.Button(button_frame, text="Annulla", bg=COLORS['secondary'], fg='white',
+                 font=('Arial', 11), command=dialog.destroy, relief='flat',
+                 padx=20, pady=8).pack(side='left', padx=5)
     
     def edit_menu_item(self):
         """Modifica item menu"""
@@ -2996,15 +3385,14 @@ DETTAGLIO ORDINE
         item_id = int(selection[0])
         values = self.menu_tree.item(item_id)['values']
         
-        dialog = tk.Toplevel(self.window)
-        dialog.title("Modifica Piatto")
-        dialog.geometry("450x400")
-        dialog.configure(bg=COLORS['background'])
+        scrollable_frame, button_frame, dialog = create_dialog_with_scrollbar(
+            self.window, "✏️ Modifica Piatto", 500, 550
+        )
         
-        tk.Label(dialog, text="✏️ Modifica Piatto", font=('Arial', 16, 'bold'),
+        tk.Label(scrollable_frame, text="✏️ Modifica Piatto", font=('Arial', 16, 'bold'),
                 bg=COLORS['background']).pack(pady=20)
         
-        frame = tk.Frame(dialog, bg=COLORS['background'])
+        frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
         frame.pack(padx=30, pady=10, fill='both', expand=True)
         
         fields = {}
@@ -3035,9 +3423,13 @@ DETTAGLIO ORDINE
             except Exception as e:
                 messagebox.showerror("Errore", str(e))
         
-        tk.Button(dialog, text="💾 Salva", bg=COLORS['accent'], fg='white',
+        tk.Button(button_frame, text="💾 Salva", bg=COLORS['accent'], fg='white',
                  font=('Arial', 11, 'bold'), command=save, relief='flat',
-                 padx=20, pady=8).pack(pady=20)
+                 padx=20, pady=8).pack(side='left', padx=5)
+        
+        tk.Button(button_frame, text="Annulla", bg=COLORS['secondary'], fg='white',
+                 font=('Arial', 11), command=dialog.destroy, relief='flat',
+                 padx=20, pady=8).pack(side='left', padx=5)
     
     def delete_menu_item(self):
         """Elimina item menu"""
