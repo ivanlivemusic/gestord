@@ -456,12 +456,20 @@ class Database:
                 cursor.execute("ALTER TABLE menu_items ADD COLUMN note_dietetiche TEXT")
                 conn.commit()
             
+            if 'varianti' not in menu_columns:
+                cursor.execute("ALTER TABLE menu_items ADD COLUMN varianti TEXT")
+                conn.commit()
+            
             # Verifica colonne tabella order_items
             cursor.execute("PRAGMA table_info(order_items)")
             item_columns = {row[1] for row in cursor.fetchall()}
             
             if 'tipo' not in item_columns:
                 cursor.execute("ALTER TABLE order_items ADD COLUMN tipo TEXT DEFAULT 'CD'")
+                conn.commit()
+            
+            if 'variante_scelta' not in item_columns:
+                cursor.execute("ALTER TABLE order_items ADD COLUMN variante_scelta TEXT")
                 conn.commit()
             
             if 'status' not in item_columns:
@@ -3300,7 +3308,9 @@ DETTAGLIO ORDINE
             ('Nome', 'text'),
             ('Prezzo', 'text'),
             ('Tipo (CD/CI)', 'text'),
-            ('Descrizione', 'text')
+            ('Descrizione', 'text'),
+            ('Allergeni (separati da virgola)', 'text'),
+            ('Varianti (es: "Piccola:5.00,Media:7.00,Grande:9.00")', 'text')
         ]
         
         for label, field_type in field_defs:
@@ -3324,9 +3334,12 @@ DETTAGLIO ORDINE
                 conn = self.database.get_connection()
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT INTO menu_items (categoria, nome, prezzo, sottocategoria, descrizione, tipo) VALUES (?, ?, ?, ?, ?, ?)",
+                    """INSERT INTO menu_items (categoria, nome, prezzo, sottocategoria, descrizione, tipo, allergeni, varianti) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (fields['Categoria'].get(), fields['Nome'].get(), float(fields['Prezzo'].get()),
-                     fields['Sottocategoria'].get(), fields['Descrizione'].get(), tipo)
+                     fields['Sottocategoria'].get(), fields['Descrizione'].get(), tipo,
+                     fields['Allergeni (separati da virgola)'].get(), 
+                     fields['Varianti (es: "Piccola:5.00,Media:7.00,Grande:9.00")'].get())
                 )
                 conn.commit()
                 conn.close()

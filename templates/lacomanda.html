@@ -1172,6 +1172,9 @@
                             <button onclick="pickupOrder(${order.id})" class="btn-pickup">
                                 ✅ Ritira e Consegna al Tavolo
                             </button>
+                            <button onclick="requestModification(${order.id})" class="btn-modify" style="background: #FF9800; margin-top: 5px;">
+                                ✏️ Richiedi Modifica
+                            </button>
                         `;
                         
                         container.appendChild(card);
@@ -1206,6 +1209,36 @@
                 showNotification('❌ Errore di rete', '#E74C3C');
                 console.error('Errore pickup:', err);
             });
+        }
+        
+        // Request modification for an order
+        function requestModification(orderId) {
+            const reason = prompt('Motivo della modifica richiesta:');
+            if (!reason || reason.trim() === '') {
+                return;
+            }
+            
+            fetch('/lacomanda/api/modification-request', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    order_id: orderId,
+                    request_type: 'modify',
+                    request_data: reason
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification('✅ Richiesta di modifica inviata!', '#2ECC71');
+                    } else {
+                        showNotification('⚠️ Errore nell\'invio', '#E74C3C');
+                    }
+                })
+                .catch(err => {
+                    console.error('Errore:', err);
+                    showNotification('⚠️ Errore nell\'invio', '#E74C3C');
+                });
         }
         
         // Play notification sound
