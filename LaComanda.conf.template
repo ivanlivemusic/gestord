@@ -32,4 +32,14 @@ maximized = False
 [Ngrok]
 # Token di autenticazione Ngrok per accesso remoto
 # Ottieni il tuo token da: https://dashboard.ngrok.com/get-started/your-authtoken
+# IMPORTANTE: NON committare il token nel repository - aggiungerlo solo localmente
+# Esempio: authtoken = YOUR_TOKEN_HERE
 authtoken = 
+
+[Reminders]
+ci_timeout = 10
+cd_timeout = 25
+cd_prepared_timeout = 5
+reminder_sound = true
+auto_reminder_enabled = true
+warning_threshold_percent = 0.8 

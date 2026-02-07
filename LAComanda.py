@@ -370,6 +370,18 @@ class Database:
                 cursor.execute("ALTER TABLE orders ADD COLUMN items_variants TEXT")
                 conn.commit()
             
+            if 'prepared_timestamp' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN prepared_timestamp TEXT")
+                conn.commit()
+            
+            if 'prepared_reminder_sent' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN prepared_reminder_sent INTEGER DEFAULT 0")
+                conn.commit()
+            
+            if 'needs_kitchen_reminder' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN needs_kitchen_reminder INTEGER DEFAULT 0")
+                conn.commit()
+            
             # Verifica colonne tabella menu_items
             cursor.execute("PRAGMA table_info(menu_items)")
             menu_columns = {row[1] for row in cursor.fetchall()}
@@ -697,6 +709,130 @@ class Database:
         )
         conn.commit()
         conn.close()
+    
+    def mark_reminder_sent(self, order_id):
+        """Mark reminder as sent for order"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET reminder_sent = 1, reminder_timestamp = ?
+            WHERE id = ?
+        """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        conn.commit()
+        conn.close()
+    
+    def mark_needs_kitchen_reminder(self, order_id, needs=True):
+        """Mark order as needing kitchen reminder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET needs_kitchen_reminder = ?
+            WHERE id = ?
+        """, (1 if needs else 0, order_id))
+        conn.commit()
+        conn.close()
+    
+    def set_prepared_timestamp(self, order_id, timestamp):
+        """Set timestamp when order was marked as prepared"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET prepared_timestamp = ?
+            WHERE id = ?
+        """, (timestamp.strftime('%Y-%m-%d %H:%M:%S'), order_id))
+        conn.commit()
+        conn.close()
+    
+    def mark_prepared_reminder_sent(self, order_id):
+        """Mark prepared reminder as sent"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders 
+            SET prepared_reminder_sent = 1
+            WHERE id = ?
+        """, (order_id,))
+        conn.commit()
+        conn.close()
+    
+    def get_ready_orders_for_waiter(self, waiter_name):
+        """Get orders ready for pickup for specific waiter"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT o.*, 
+                   CAST((julianday('now') - julianday(o.prepared_timestamp)) * 24 * 60 AS INTEGER) as minutes_ready
+            FROM orders o
+            WHERE o.waiter_name = ?
+            AND o.status = 'preparato'
+            AND o.prepared_timestamp IS NOT NULL
+            ORDER BY o.prepared_timestamp ASC
+        """, (waiter_name,))
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order_dict = dict(order)
+            # Get items
+            cursor.execute("""
+                SELECT menu_item_name as name, quantity, price
+                FROM order_items
+                WHERE order_id = ?
+            """, (order['id'],))
+            order_dict['items'] = [dict(row) for row in cursor.fetchall()]
+            result.append(order_dict)
+        
+        conn.close()
+        return result
+    
+    def get_orders_for_kitchen_display(self):
+        """Get orders for kitchen display divided by column"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT o.*,
+                   CASE 
+                       WHEN o.needs_kitchen_reminder = 1 THEN 'reminder'
+                       WHEN o.status = 'preparato' THEN 'preparato'
+                       ELSE 'inserito'
+                   END as display_column
+            FROM orders o
+            WHERE EXISTS (
+                SELECT 1 FROM order_items oi 
+                WHERE oi.order_id = o.id AND oi.tipo = 'CD'
+            )
+            AND (o.order_type = 'normal' OR o.order_type IS NULL)
+            AND o.status IN ('inserito', 'preparato')
+            ORDER BY o.timestamp ASC
+        """)
+        orders = cursor.fetchall()
+        
+        inserito = []
+        preparato = []
+        reminder = []
+        
+        for order in orders:
+            order_dict = dict(order)
+            # Get CD items only
+            cursor.execute("""
+                SELECT menu_item_name as nome, quantity, tipo
+                FROM order_items
+                WHERE order_id = ? AND tipo = 'CD'
+            """, (order['id'],))
+            order_dict['items'] = [dict(row) for row in cursor.fetchall()]
+            
+            if order['display_column'] == 'inserito':
+                inserito.append(order_dict)
+            elif order['display_column'] == 'preparato':
+                preparato.append(order_dict)
+            else:  # reminder
+                reminder.append(order_dict)
+        
+        conn.close()
+        return {'inserito': inserito, 'preparato': preparato, 'reminder': reminder}
     
     def get_orders_for_kitchen(self):
         """Get orders for kitchen display - only CD with order_type='normal'"""
@@ -1420,6 +1556,51 @@ class WebApp:
             except Exception as e:
                 logger.error(f"Error getting kitchen orders: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/lacomanda/api/my-ready-orders')
+        def my_ready_orders():
+            """Get orders ready for pickup for current waiter"""
+            waiter_name = session.get('full_name') or session.get('waiter_user')
+            if not waiter_name:
+                return jsonify({'error': 'Non autenticato'}), 401
+            
+            try:
+                orders = self.database.get_ready_orders_for_waiter(waiter_name)
+                return jsonify(orders)
+            except Exception as e:
+                logger.error(f"Error getting ready orders: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/lacomanda/api/pickup-order', methods=['POST'])
+        def pickup_order():
+            """Mark order as picked up and in delivery"""
+            if 'user_id' not in session and 'waiter_id' not in session:
+                return jsonify({'error': 'Non autenticato'}), 401
+            
+            try:
+                data = request.get_json()
+                order_id = data.get('order_id')
+                
+                if not order_id:
+                    return jsonify({'error': 'Order ID mancante'}), 400
+                
+                # Update status to in_consegna
+                success = self.database.update_order_status(order_id, 'in_consegna')
+                
+                if success:
+                    # Emit socketio event
+                    self.socketio.emit('order_status_changed', {
+                        'order_id': order_id,
+                        'new_status': 'in_consegna'
+                    }, broadcast=True)
+                    
+                    return jsonify({'success': True})
+                else:
+                    return jsonify({'error': 'Errore aggiornamento'}), 500
+                    
+            except Exception as e:
+                logger.error(f"Error picking up order: {e}")
+                return jsonify({'error': str(e)}), 500
     
     def setup_socketio(self):
         """Configura eventi SocketIO"""
@@ -2009,6 +2190,10 @@ class AdminConsole:
         self.window.after(1000, auto_refresh)
     def setup_ui(self):
         """Setup UI completa"""
+        # Configure ttk Style for taller rows
+        style = ttk.Style()
+        style.configure("Treeview", rowheight=60)
+        
         # Notebook per tabs
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill='both', expand=True)
@@ -4672,10 +4857,11 @@ class StatisticsWindow:
 class KitchenDisplay:
     """Display cucina con finestra ridimensionabile e splitters"""
     
-    def __init__(self, parent, database, config_manager):
+    def __init__(self, parent, database, config_manager, socketio=None):
         self.parent = parent
         self.database = database
         self.config_manager = config_manager
+        self.socketio = socketio
         
         self.window = tk.Toplevel(parent)
         self.window.title("LA COMANDA - Display Cucina | www.ivanlivemusic.com")
@@ -4922,29 +5108,39 @@ class KitchenDisplay:
         
         state = order['status']
         
-        if column == 'inserito':
-            tk.Button(btn_frame, text="✅ Preparato", bg=COLORS['accent'], fg='white',
+        # ONLY show "Preparato" button - no "In Delivery" button
+        if column == 'inserito' or (column == 'reminder' and state == 'inserito'):
+            bg_color = '#FF4500' if column == 'reminder' else COLORS['accent']
+            tk.Button(btn_frame, text="✅ Segna Preparato", bg=bg_color, fg='white',
                      font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
                      command=lambda: self.change_status(order['id'], 'preparato')).pack()
-        elif column == 'preparato':
-            tk.Button(btn_frame, text="🚚 Pronto", bg=COLORS['accent'], fg='white',
-                     font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                     command=lambda: self.change_status(order['id'], 'in_consegna')).pack()
-        elif column == 'reminder':
-            # Mostra azioni basate sullo stato reale
-            if state == 'inserito':
-                tk.Button(btn_frame, text="✅ Preparato", bg='#FF4500', fg='white',
-                         font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                         command=lambda: self.change_status(order['id'], 'preparato')).pack()
-            elif state == 'preparato':
-                tk.Button(btn_frame, text="🚚 Pronto", bg='#FF4500', fg='white',
-                         font=('Arial', 10, 'bold'), relief='flat', padx=10, pady=5,
-                         command=lambda: self.change_status(order['id'], 'in_consegna')).pack()
 
     
     def change_status(self, order_id, new_status):
-        """Cambia stato ordine"""
+        """Cambia stato ordine e notifica cameriere se preparato"""
         self.database.update_order_status(order_id, new_status)
+        
+        # Se l'ordine è stato marcato come preparato, imposta timestamp e invia notifica
+        if new_status == 'preparato':
+            self.database.set_prepared_timestamp(order_id, datetime.now())
+            
+            # Get order details for notification
+            order = self.database.get_order(order_id)
+            if order and self.socketio:
+                waiter_name = order.get('waiter_name', 'Unknown')
+                table_number = order.get('table_number', '?')
+                
+                # Emit notification to waiter with waiter_name for filtering
+                self.socketio.emit('order_ready_for_pickup', {
+                    'order_id': order_id,
+                    'table': table_number,
+                    'waiter_name': waiter_name,
+                    'message': f"🔔 Ordine Tavolo {table_number} pronto da ritirare!",
+                    'timestamp': datetime.now().strftime('%H:%M')
+                }, namespace='/')
+                
+                logger.info(f"✅ Notifica ritiro → {waiter_name} (Ordine #{order_id}, Tavolo {table_number})")
+        
         self.refresh_display()
     
     def update_clock(self):
@@ -5011,7 +5207,7 @@ class LaComanda:
         # Crea finestre Tkinter
         self.qr_window = QRCodeWindow(self.root, self.ngrok_url, self.config_manager)
         self.admin_console = AdminConsole(self.root, self.database, self.webapp.socketio, self.config_manager)
-        self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager)
+        self.kitchen_display = KitchenDisplay(self.root, self.database, self.config_manager, self.webapp.socketio)
         
         # Nascondi inizialmente kitchen display e QR window secondo configurazione
         try:
@@ -5212,8 +5408,23 @@ class LaComanda:
             logger.error(f"Errore configurazione ngrok: {e}")
             return None
     
+    def get_local_ip(self):
+        """Get local IP address of the machine"""
+        import socket
+        try:
+            # Create a socket to determine local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Connect to a public DNS server (doesn't actually send data)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception as e:
+            logger.warning(f"Could not determine local IP: {e}")
+            return "127.0.0.1"
+    
     def start_ngrok(self):
-        """Avvia ngrok tunnel per accesso remoto"""
+        """Avvia ngrok tunnel per accesso remoto con gestione tunnel esistenti"""
         token = self.setup_ngrok()
         
         if not token:
@@ -5222,12 +5433,45 @@ class LaComanda:
             return f"http://localhost:{PORT}"
         
         try:
+            # Chiudi tunnel esistenti
+            try:
+                existing_tunnels = ngrok.get_tunnels()
+                for tunnel in existing_tunnels:
+                    logger.info(f"Chiusura tunnel esistente: {tunnel.public_url}")
+                    ngrok.disconnect(tunnel.public_url)
+                    time.sleep(1)
+            except Exception as e:
+                logger.debug(f"Nessun tunnel da chiudere: {e}")
+            
+            # Avvia nuovo tunnel
+            logger.info("Avvio tunnel ngrok...")
             public_url = ngrok.connect(PORT, bind_tls=True)
-            logger.info(f"Ngrok tunnel avviato: {public_url.public_url}")
+            logger.info(f"✅ Tunnel attivo: {public_url.public_url}")
             return public_url.public_url
+            
         except Exception as e:
-            logger.warning(f"Errore ngrok: {e}. Il sistema funzionerà solo in localhost.")
-            return f"http://localhost:{PORT}"
+            logger.error(f"❌ Errore ngrok: {e}")
+            
+            # Fallback: termina solo processi ngrok senza PID tracking
+            # NOTE: This is a last-resort fallback. In production, consider maintaining
+            # PID tracking or using a process manager for better control.
+            try:
+                logger.warning("Tentativo fallback cleanup ngrok...")
+                # Try one more disconnect via pyngrok API
+                try:
+                    ngrok.kill()
+                    time.sleep(2)
+                    logger.info("Killed ngrok process via pyngrok API")
+                except Exception as kill_api_e:
+                    logger.debug(f"pyngrok kill failed: {kill_api_e}")
+                
+                # Riprova connessione
+                public_url = ngrok.connect(PORT, bind_tls=True)
+                logger.info(f"✅ Tunnel attivo (dopo cleanup): {public_url.public_url}")
+                return public_url.public_url
+            except Exception as cleanup_e:
+                logger.warning(f"Impossibile avviare tunnel ngrok: {cleanup_e}. Il sistema funzionerà solo in localhost.")
+                return f"http://localhost:{PORT}"
     
     def run(self):
         """Avvia main loop"""
