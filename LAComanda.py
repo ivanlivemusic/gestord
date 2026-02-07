@@ -440,6 +440,19 @@ class Database:
                 cursor.execute("ALTER TABLE orders ADD COLUMN quick_service INTEGER DEFAULT 0")
                 conn.commit()
             
+            # Add columns for tracking last reminder details
+            if 'last_reminder_type' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN last_reminder_type TEXT")
+                conn.commit()
+            
+            if 'last_reminder_recipient' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN last_reminder_recipient TEXT")
+                conn.commit()
+            
+            if 'last_reminder_timestamp' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN last_reminder_timestamp TEXT")
+                conn.commit()
+            
             # Verifica colonne tabella menu_items
             cursor.execute("PRAGMA table_info(menu_items)")
             menu_columns = {row[1] for row in cursor.fetchall()}
@@ -831,6 +844,21 @@ class Database:
             SET prepared_reminder_sent = 1
             WHERE id = ?
         """, (order_id,))
+        conn.commit()
+        conn.close()
+    
+    def record_reminder(self, order_id, reminder_type, recipient):
+        """Record reminder sent with details for tracking"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute("""
+            UPDATE orders 
+            SET last_reminder_type = ?,
+                last_reminder_recipient = ?,
+                last_reminder_timestamp = ?
+            WHERE id = ?
+        """, (reminder_type, recipient, timestamp, order_id))
         conn.commit()
         conn.close()
     
@@ -2957,50 +2985,56 @@ class AdminConsole:
                 if tag not in ['inserito', 'preparato', 'in_consegna', 'pagato']:
                     tag = 'even' if idx % 2 == 0 else 'odd'
             
-            # Calculate reminder status
+            # Calculate reminder status with history
             reminder_status = ""
-            if order['status'] in ['inserito', 'preparato']:
-                try:
-                    order_time = datetime.fromisoformat(order['timestamp'])
-                    elapsed_minutes = (datetime.now() - order_time).total_seconds() / 60
-                    
-                    tipo = order.get('tipo_consegna', 'CD')
-                    
-                    # CI timeout: 10 min
-                    # CD inserito timeout: 25 min
-                    # CD preparato timeout: 5 min
-                    if tipo == 'CI' and order['status'] == 'inserito':
-                        if elapsed_minutes >= 10:
-                            if order.get('reminder_sent'):
-                                reminder_status = f"🔔 {int(elapsed_minutes)}min"
-                            else:
+            if order['status'] in ['inserito', 'preparato', 'in_consegna']:
+                # Check if there's a last reminder sent
+                if order.get('last_reminder_timestamp'):
+                    try:
+                        last_reminder_time = datetime.fromisoformat(order['last_reminder_timestamp'])
+                        elapsed_since_reminder = (datetime.now() - last_reminder_time).total_seconds() / 60
+                        recipient = order.get('last_reminder_recipient', 'N/A')
+                        reminder_type = order.get('last_reminder_type', 'UNKNOWN')
+                        
+                        # Format: "👨‍🍳 5min ago" or "🧑‍🦱 Mario 12min ago"
+                        reminder_status = f"{recipient} {int(elapsed_since_reminder)}min"
+                    except (ValueError, TypeError):
+                        reminder_status = order.get('last_reminder_recipient', 'N/A')
+                else:
+                    # No reminder sent yet, show current elapsed time
+                    try:
+                        order_time = datetime.fromisoformat(order['timestamp'])
+                        elapsed_minutes = (datetime.now() - order_time).total_seconds() / 60
+                        
+                        tipo = order.get('tipo_consegna', 'CD')
+                        
+                        # Show time with icon based on urgency
+                        if tipo == 'CI' and order['status'] == 'inserito':
+                            if elapsed_minutes >= 10:
                                 reminder_status = f"⚠️ {int(elapsed_minutes)}min"
-                        else:
-                            reminder_status = f"⏱️ {int(elapsed_minutes)}min"
-                    elif tipo == 'CD' and order['status'] == 'inserito':
-                        if elapsed_minutes >= 25:
-                            if order.get('needs_kitchen_reminder'):
+                            else:
+                                reminder_status = f"⏱️ {int(elapsed_minutes)}min"
+                        elif tipo == 'CD' and order['status'] == 'inserito':
+                            if elapsed_minutes >= 25:
                                 reminder_status = f"🔥 {int(elapsed_minutes)}min"
                             else:
-                                reminder_status = f"⚠️ {int(elapsed_minutes)}min"
-                        else:
-                            reminder_status = f"⏱️ {int(elapsed_minutes)}min"
-                    elif tipo == 'CD' and order['status'] == 'preparato':
-                        if order.get('prepared_timestamp'):
-                            prepared_time = datetime.fromisoformat(order['prepared_timestamp'])
-                            prepared_elapsed = (datetime.now() - prepared_time).total_seconds() / 60
-                            if prepared_elapsed >= 5:
-                                if order.get('prepared_reminder_sent'):
+                                reminder_status = f"⏱️ {int(elapsed_minutes)}min"
+                        elif tipo == 'CD' and order['status'] == 'preparato':
+                            if order.get('prepared_timestamp'):
+                                prepared_time = datetime.fromisoformat(order['prepared_timestamp'])
+                                prepared_elapsed = (datetime.now() - prepared_time).total_seconds() / 60
+                                if prepared_elapsed >= 5:
                                     reminder_status = f"🔔 {int(prepared_elapsed)}min"
                                 else:
-                                    reminder_status = f"🔥 {int(prepared_elapsed)}min"
+                                    reminder_status = f"⏱️ {int(prepared_elapsed)}min"
                             else:
-                                reminder_status = f"⏱️ {int(prepared_elapsed)}min"
-                except (ValueError, KeyError, AttributeError) as e:
-                    logger.debug(f"Error calculating reminder status: {e}")
-                    reminder_status = "-"
+                                reminder_status = f"⏱️ {int(elapsed_minutes)}min"
+                        else:
+                            reminder_status = "N/A"
+                    except (ValueError, KeyError, AttributeError):
+                        reminder_status = "N/A"
             else:
-                reminder_status = "-"
+                reminder_status = "N/A"
             
             self.orders_tree.insert('', 'end', iid=order['id'],
                                    values=(order['id'], table_display, order['num_people'],
@@ -3043,7 +3077,12 @@ class AdminConsole:
                                   tags=(tag,))
     
     def change_order_status(self):
-        """Cambia stato ordine"""
+        """Cambia stato ordine - ONLY allows consegnato → pagato from admin
+        
+        NOTE: User messages are in Italian as this is an Italian restaurant system.
+        For internationalization support, consider externalizing all UI strings
+        to a separate resource file (e.g., using gettext or a simple JSON mapping).
+        """
         selection = self.orders_tree.selection()
         if not selection:
             messagebox.showwarning("Attenzione", "Seleziona un ordine")
@@ -3052,10 +3091,25 @@ class AdminConsole:
         order_id = int(selection[0])
         new_status = self.status_var.get()
         
-        self.database.update_order_status(order_id, new_status)
-        self.socketio.emit('order_updated', {'order_id': order_id, 'status': new_status}, namespace='/')
-        self.refresh_orders()
-        messagebox.showinfo("✅ Successo", f"Ordine #{order_id} aggiornato a: {new_status}")
+        # Get current order status
+        order = self.database.get_order_by_id(order_id)
+        current_status = order['status']
+        
+        # RESTRICTION: Admin can only change from 'consegnato' to 'pagato'
+        if current_status == 'consegnato' and new_status == 'pagato':
+            self.database.update_order_status(order_id, new_status)
+            self.socketio.emit('order_updated', {'order_id': order_id, 'status': new_status}, namespace='/')
+            self.refresh_orders()
+            messagebox.showinfo("✅ Successo", f"Ordine #{order_id} aggiornato a: {new_status}")
+        elif current_status == new_status:
+            messagebox.showinfo("ℹ️ Info", f"Ordine già nello stato: {new_status}")
+        else:
+            messagebox.showerror("❌ Errore", 
+                f"Cambio stato non permesso!\n\n"
+                f"L'amministratore può solo cambiare lo stato da 'consegnato' a 'pagato'.\n\n"
+                f"Stato attuale: {current_status}\n"
+                f"Stato richiesto: {new_status}\n\n"
+                f"Per altri cambi di stato, usare l'interfaccia cameriere o cucina.")
     
     def edit_order(self):
         """Modifica ordine"""
@@ -3327,34 +3381,16 @@ DETTAGLIO ORDINE
                               anchor='w')
             cb.pack(side='left', fill='x', expand=True, padx=10, pady=8)
         
-        # Recipient selector
-        tk.Label(scrollable_frame, text="Destinatario:", font=('Arial', 12, 'bold'),
-                bg=COLORS['background']).pack(pady=(20, 5))
+        # Info text about automatic recipient selection
+        info_frame = tk.Frame(scrollable_frame, bg='#E3F2FD', relief='solid', borderwidth=1)
+        info_frame.pack(fill='x', padx=10, pady=(20, 10))
         
-        recipient_var = tk.StringVar(value='kitchen')
-        recipient_frame = tk.Frame(scrollable_frame, bg=COLORS['background'])
-        recipient_frame.pack()
-        
-        tk.Radiobutton(recipient_frame, text="👨‍🍳 Cucina", variable=recipient_var, 
-                      value='kitchen', font=('Arial', 11), bg=COLORS['background']).pack(side='left', padx=15)
-        tk.Radiobutton(recipient_frame, text="👔 Cameriere", variable=recipient_var, 
-                      value='waiter', font=('Arial', 11), bg=COLORS['background']).pack(side='left', padx=15)
-        
-        # Auto-select recipient based on selected items
-        def update_recipient_selection(*args):
-            """Auto-select recipient: waiter if any preparato, else kitchen"""
-            selected_items = [item_id for item_id, var in checkbox_vars.items() if var.get()]
-            if selected_items:
-                # Check if any selected item is preparato
-                has_preparato = any(item_info[item_id]['status'] == 'preparato' for item_id in selected_items)
-                if has_preparato:
-                    recipient_var.set('waiter')
-                else:
-                    recipient_var.set('kitchen')
-        
-        # Bind checkbox changes to auto-selection
-        for var in checkbox_vars.values():
-            var.trace_add('write', update_recipient_selection)
+        tk.Label(info_frame, text="ℹ️ Il destinatario è determinato automaticamente:", 
+                font=('Arial', 11, 'bold'), bg='#E3F2FD', fg='#1976D2').pack(pady=(10, 5))
+        tk.Label(info_frame, text="• Ordini 'inserito' (non preparati) → 👨‍🍳 Cucina", 
+                font=('Arial', 10), bg='#E3F2FD', anchor='w').pack(padx=20, pady=2)
+        tk.Label(info_frame, text="• Ordini 'preparato' (non consegnati) → 🧑‍🦱 Cameriere responsabile", 
+                font=('Arial', 10), bg='#E3F2FD', anchor='w').pack(padx=20, pady=(2, 10))
         
         # Buttons
         def send_reminder():
@@ -3364,32 +3400,65 @@ DETTAGLIO ORDINE
                 messagebox.showwarning("Attenzione", "Seleziona almeno un prodotto")
                 return
             
-            recipient = recipient_var.get()
+            # Auto-determine recipient based on order status
+            # Group by status to determine recipients
+            preparato_items = []
+            inserito_items = []
             
-            # Emit via Socket.IO to correct room
-            try:
-                if recipient == 'kitchen':
-                    # Broadcast to kitchen room
-                    self.socketio.emit('manual_reminder', {
-                        'item_ids': selected_items,
-                        'recipient': recipient,
-                        'timestamp': datetime.now().isoformat(),
-                        'message': f"🔔 Reminder manuale: {len(selected_items)} prodotti da preparare"
-                    }, room='kitchen')
-                    logger.info(f"📤 Manual reminder sent to kitchen: {len(selected_items)} items")
+            for item_id in selected_items:
+                if item_info[item_id]['status'] == 'preparato':
+                    preparato_items.append(item_id)
                 else:
-                    # Send to specific waiters
-                    waiters = set(item_info[item_id]['waiter'] for item_id in selected_items)
+                    inserito_items.append(item_id)
+            
+            # Emit via Socket.IO to correct recipient(s)
+            try:
+                reminders_sent = 0
+                
+                # Send to kitchen for inserito items
+                if inserito_items:
+                    self.socketio.emit('manual_reminder', {
+                        'item_ids': inserito_items,
+                        'recipient': 'kitchen',
+                        'timestamp': datetime.now().isoformat(),
+                        'message': f"🔔 Reminder manuale: {len(inserito_items)} prodotti da preparare"
+                    }, room='kitchen')
+                    logger.info(f"📤 Manual reminder sent to kitchen: {len(inserito_items)} items")
+                    reminders_sent += 1
+                    
+                    # Record reminder for each order
+                    order_ids = set(item_info[item_id]['order_id'] for item_id in inserito_items)
+                    for order_id in order_ids:
+                        self.database.record_reminder(order_id, 'MANUAL', '👨‍🍳 Kitchen')
+                
+                # Send to waiters for preparato items
+                if preparato_items:
+                    waiters = set(item_info[item_id]['waiter'] for item_id in preparato_items)
                     for waiter in waiters:
+                        waiter_items = [item_id for item_id in preparato_items 
+                                       if item_info[item_id]['waiter'] == waiter]
                         self.socketio.emit('manual_reminder', {
-                            'item_ids': selected_items,
+                            'item_ids': waiter_items,
                             'recipient': 'waiter',
                             'timestamp': datetime.now().isoformat(),
                             'message': f"🔔 Reminder: Ordini pronti da ritirare"
                         }, room=f"waiter_{waiter}")
                         logger.info(f"📤 Manual reminder sent to waiter {waiter}")
+                        reminders_sent += 1
+                        
+                        # Record reminder for each order
+                        order_ids = set(item_info[item_id]['order_id'] for item_id in waiter_items)
+                        for order_id in order_ids:
+                            self.database.record_reminder(order_id, 'MANUAL', f'🧑‍🦱 {waiter}')
                 
-                messagebox.showinfo("✅ Successo", f"Reminder inviato a {recipient}\n{len(selected_items)} prodotti selezionati")
+                recipient_msg = []
+                if inserito_items:
+                    recipient_msg.append(f"👨‍🍳 Cucina ({len(inserito_items)} prodotti)")
+                if preparato_items:
+                    recipient_msg.append(f"🧑‍🦱 Camerieri ({len(preparato_items)} prodotti)")
+                
+                messagebox.showinfo("✅ Successo", 
+                    f"Reminder inviato a:\n" + "\n".join(recipient_msg))
                 dialog.destroy()
             except Exception as e:
                 logger.error(f"Error sending manual reminder: {e}")
@@ -5963,6 +6032,9 @@ class LaComanda:
                         # Segna per colonna REMINDER
                         self.database.mark_needs_kitchen_reminder(order['id'], True)
                         
+                        # Record reminder in database
+                        self.database.record_reminder(order['id'], 'CD_KITCHEN', '👨‍🍳 Kitchen')
+                        
                         # Emit a cucina
                         self.webapp.socketio.emit('kitchen_urgent_reminder', {
                             'order_id': order['id'],
@@ -6007,20 +6079,33 @@ class LaComanda:
         waiter = order.get('waiter', 'Unknown')
         table = order.get('table', 'N/A')
         
-        # Costruisci messaggio
+        # Costruisci messaggio e determina recipient
         if reminder_type == 'CI':
             message = f"⚠️ REMINDER: Ordine Tavolo {table} da consegnare (CI)!\nTrascorsi {minutes} minuti."
+            recipient = f"waiter_{waiter}"
+            recipient_display = f"🧑‍🦱 {waiter}"
             # Marca reminder come inviato
             self.database.mark_reminder_sent(order['id'])
         elif reminder_type == 'CD_READY':
             message = f"🔔 REMINDER: Ritirare ordine Tavolo {table} dalla cucina!\nPronto da {minutes} minuti."
+            recipient = f"waiter_{waiter}"
+            recipient_display = f"🧑‍🦱 {waiter}"
             # Marca prepared reminder come inviato
             self.database.mark_prepared_reminder_sent(order['id'])
+        elif reminder_type == 'CD_KITCHEN':
+            message = f"🔥 REMINDER: Ordine #{order['id']} urgente da preparare!"
+            recipient = "kitchen"
+            recipient_display = "👨‍🍳 Kitchen"
         else:
             message = f"⚠️ REMINDER: Ordine #{order['id']}"
+            recipient = f"waiter_{waiter}"
+            recipient_display = f"🧑‍🦱 {waiter}"
             self.database.mark_reminder_sent(order['id'])
         
-        # Emit Socket.IO al cameriere specifico
+        # Record reminder in database for history tracking
+        self.database.record_reminder(order['id'], reminder_type, recipient_display)
+        
+        # Emit Socket.IO
         try:
             self.webapp.socketio.emit('reminder', {
                 'order_id': order['id'],
@@ -6029,7 +6114,7 @@ class LaComanda:
                 'urgent': True,
                 'timestamp': datetime.now().strftime('%H:%M:%S'),
                 'reminder_type': reminder_type
-            }, room=f"waiter_{waiter}")
+            }, room=recipient)
             
             logger.info(f"📤 Reminder Socket.IO inviato a cameriere {waiter}: Ordine #{order['id']}")
         except Exception as e:

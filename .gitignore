@@ -72,3 +72,13 @@ ngrok.yml
 
 # Historic order databases
 orders_history_*.db
+
+# Generated documentation
+IMPLEMENTATION_*.md
+VERIFICATION_*.md
+VISUAL_SUMMARY.md
+FINAL_VERIFICATION.md
+
+# Test scripts (keep populate_test_data.py and test_critical_fixes.py)
+generate_test_databases.py
+
