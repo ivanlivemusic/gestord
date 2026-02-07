@@ -5267,6 +5267,7 @@ class LaComanda:
         try:
             auto_enabled = self.config_manager.config.getboolean('Reminders', 'auto_reminder_enabled', fallback=True)
             if not auto_enabled:
+                logger.debug("⏸️ Reminder disabilitati da configurazione")
                 return
         except:
             pass
@@ -5281,8 +5282,14 @@ class LaComanda:
             cd_timeout = 25
             cd_prepared_timeout = 5
         
+        logger.debug(f"⏱️ Timer attivi: CI={ci_timeout}min, CD_inserito={cd_timeout}min, CD_preparato={cd_prepared_timeout}min")
+        
         orders = self.database.get_all_orders()
         now = datetime.now()
+        
+        logger.debug(f"📊 Controllo {len(orders)} ordini attivi")
+        
+        reminders_sent = 0
         
         for order in orders:
             try:
@@ -5292,42 +5299,110 @@ class LaComanda:
                 # Determina tipo ordine (CI/CD)
                 tipo = order.get('tipo_consegna', 'CD')
                 
-                # CI: configurable timeout reminder
-                if tipo == 'CI' and elapsed_minutes >= ci_timeout and not order.get('reminder_sent'):
-                    self.send_reminder_notification(order, 'CI')
+                logger.debug(f"📋 Ordine #{order['id']}: tipo={tipo}, status={order['status']}, elapsed={elapsed_minutes:.1f}min")
                 
-                # CD preparato: configurable timeout reminder
-                elif tipo == 'CD' and order['status'] == 'preparato' and elapsed_minutes >= cd_prepared_timeout:
-                    if not order.get('reminder_sent'):
-                        self.send_reminder_notification(order, 'CD_READY')
+                # CASO 1: CI inserito > timeout → AVVISA CAMERIERE
+                if (tipo == 'CI' and 
+                    order['status'] == 'inserito' and 
+                    elapsed_minutes >= ci_timeout and 
+                    not order.get('reminder_sent')):
+                    
+                    logger.warning(f"🔔 REMINDER CI: Ordine #{order['id']} (Tavolo {order.get('table')}) - {int(elapsed_minutes)}min")
+                    self.send_reminder_notification(order, 'CI', int(elapsed_minutes))
+                    reminders_sent += 1
                 
-                # CD in cucina: configurable timeout reminder
-                elif tipo == 'CD' and order['status'] == 'inserito' and elapsed_minutes >= cd_timeout:
-                    if not order.get('reminder_sent'):
-                        self.send_reminder_notification(order, 'CD_KITCHEN')
+                # CASO 2: CD inserito > timeout → COLONNA REMINDER CUCINA
+                elif (tipo == 'CD' and 
+                      order['status'] == 'inserito' and 
+                      elapsed_minutes >= cd_timeout):
+                    
+                    if not order.get('needs_kitchen_reminder'):
+                        logger.warning(f"🔥 REMINDER CUCINA: Ordine #{order['id']} (Tavolo {order.get('table')}) - {int(elapsed_minutes)}min URGENTE")
+                        
+                        # Segna per colonna REMINDER
+                        self.database.mark_needs_kitchen_reminder(order['id'], True)
+                        
+                        # Emit a cucina
+                        self.webapp.socketio.emit('kitchen_urgent_reminder', {
+                            'order_id': order['id'],
+                            'table': order.get('table'),
+                            'minutes': int(elapsed_minutes)
+                        }, broadcast=True)
+                        
+                        reminders_sent += 1
+                        logger.info(f"🔥 Ordine #{order['id']} spostato in colonna REMINDER cucina")
+                
+                # CASO 3: CD preparato > timeout → AVVISA CAMERIERE RITIRO
+                elif (tipo == 'CD' and 
+                      order['status'] == 'preparato'):
+                    
+                    if order.get('prepared_timestamp'):
+                        try:
+                            prepared_time = datetime.fromisoformat(order['prepared_timestamp'])
+                            prepared_elapsed = (now - prepared_time).total_seconds() / 60
+                            
+                            logger.debug(f"📦 Ordine #{order['id']} preparato da {prepared_elapsed:.1f}min")
+                            
+                            if (prepared_elapsed >= cd_prepared_timeout and 
+                                not order.get('prepared_reminder_sent')):
+                                
+                                logger.warning(f"🔔 REMINDER RITIRO: Ordine #{order['id']} (Tavolo {order.get('table')}) - {int(prepared_elapsed)}min")
+                                self.send_reminder_notification(order, 'CD_READY', int(prepared_elapsed))
+                                reminders_sent += 1
+                        except:
+                            pass
                 
             except Exception as e:
-                logger.error(f"Errore check reminder ordine {order['id']}: {e}")
-    
-    def send_reminder_notification(self, order, reminder_type):
-        """Invia notifica reminder
+                logger.error(f"❌ Errore processing ordine #{order.get('id')}: {e}")
         
-        NOTE: Currently logs reminders only. Future implementation will include:
-        - Visual popup notifications
-        - System sound alerts  
-        - Taskbar flash (Windows/Linux)
-        - Optional email/SMS notifications
-        """
-        logger.info(f"Reminder {reminder_type} per ordine {order['id']}")
-        # Marca reminder come inviato
-        conn = self.database.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE orders SET reminder_sent = 1, reminder_timestamp = ? WHERE id = ?",
-            (datetime.now().isoformat(), order['id'])
-        )
-        conn.commit()
-        conn.close()
+        if reminders_sent > 0:
+            logger.info(f"✅ Controllo reminder completato: {reminders_sent} reminder inviati")
+        else:
+            logger.debug("✅ Controllo reminder completato: nessun reminder da inviare")
+    
+    def send_reminder_notification(self, order, reminder_type, minutes):
+        """Invia notifica reminder con Socket.IO e logging dettagliato"""
+        
+        waiter = order.get('waiter', 'Unknown')
+        table = order.get('table', 'N/A')
+        
+        # Costruisci messaggio
+        if reminder_type == 'CI':
+            message = f"⚠️ REMINDER: Ordine Tavolo {table} da consegnare (CI)!\nTrascorsi {minutes} minuti."
+            # Marca reminder come inviato
+            self.database.mark_reminder_sent(order['id'])
+        elif reminder_type == 'CD_READY':
+            message = f"🔔 REMINDER: Ritirare ordine Tavolo {table} dalla cucina!\nPronto da {minutes} minuti."
+            # Marca prepared reminder come inviato
+            self.database.mark_prepared_reminder_sent(order['id'])
+        else:
+            message = f"⚠️ REMINDER: Ordine #{order['id']}"
+            self.database.mark_reminder_sent(order['id'])
+        
+        # Emit Socket.IO al cameriere specifico
+        try:
+            self.webapp.socketio.emit('reminder', {
+                'order_id': order['id'],
+                'table': table,
+                'message': message,
+                'urgent': True,
+                'timestamp': datetime.now().strftime('%H:%M:%S'),
+                'reminder_type': reminder_type
+            }, room=f"waiter_{waiter}")
+            
+            logger.info(f"📤 Reminder Socket.IO inviato a cameriere {waiter}: Ordine #{order['id']}")
+        except Exception as e:
+            logger.error(f"❌ Errore invio Socket.IO reminder: {e}")
+        
+        # Suono se abilitato (solo per admin console, non web)
+        try:
+            if self.config_manager.config.getboolean('Reminders', 'reminder_sound', fallback=True):
+                # Bell sound for admin console
+                pass
+        except:
+            pass
+        
+        logger.info(f"✅ Reminder {reminder_type} registrato per ordine #{order['id']}")
     
     def check_end_of_day(self):
         """Controlla se è fine giornata e migra ordini"""

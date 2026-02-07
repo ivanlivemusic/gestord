@@ -512,6 +512,209 @@
             background: var(--primary-color);
         }
         
+        /* Ready Orders Section */
+        .ready-orders-section {
+            background: linear-gradient(135deg, #FFF3E0 0%, #FFE0B2 100%);
+            border: 3px solid #FF9800;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 25px;
+            box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+        }
+        
+        [data-theme="dark"] .ready-orders-section {
+            background: linear-gradient(135deg, #3a2a1a 0%, #4a3a2a 100%);
+            border-color: #FF9800;
+        }
+        
+        .ready-orders-section .section-title {
+            color: #E65100;
+            font-size: 22px;
+            margin-bottom: 15px;
+            text-align: center;
+            font-weight: bold;
+        }
+        
+        [data-theme="dark"] .ready-orders-section .section-title {
+            color: #FFB74D;
+        }
+        
+        .orders-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        
+        .order-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+        
+        [data-theme="dark"] .order-card {
+            background: #2d2d2d;
+            color: #E0E0E0;
+        }
+        
+        .ready-order {
+            background: #FFECB3;
+            border-left: 6px solid #FF9800;
+            transition: all 0.3s ease;
+        }
+        
+        [data-theme="dark"] .ready-order {
+            background: #3a2a1a;
+            border-left-color: #FF9800;
+        }
+        
+        .ready-order:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(255, 152, 0, 0.4);
+        }
+        
+        .ready-order.urgent {
+            background: linear-gradient(135deg, #FFCDD2 0%, #EF9A9A 100%);
+            border-left: 6px solid #F44336;
+            animation: pulse-urgent 1.5s infinite;
+        }
+        
+        [data-theme="dark"] .ready-order.urgent {
+            background: linear-gradient(135deg, #5a1a1a 0%, #6a2a2a 100%);
+        }
+        
+        @keyframes pulse-urgent {
+            0%, 100% { 
+                transform: scale(1); 
+                box-shadow: 0 4px 15px rgba(244, 67, 54, 0.3);
+            }
+            50% { 
+                transform: scale(1.02); 
+                box-shadow: 0 6px 25px rgba(244, 67, 54, 0.5);
+            }
+        }
+        
+        .order-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .order-table {
+            font-size: 20px;
+            font-weight: bold;
+            color: #FF9800;
+        }
+        
+        [data-theme="dark"] .order-table {
+            color: #FFB74D;
+        }
+        
+        .ready-time {
+            font-size: 14px;
+            color: #F57C00;
+            font-weight: bold;
+            padding: 5px 10px;
+            background: rgba(255, 152, 0, 0.1);
+            border-radius: 5px;
+        }
+        
+        .ready-time.urgent {
+            color: #F44336;
+            font-size: 16px;
+            animation: blink 1s infinite;
+            background: rgba(244, 67, 54, 0.1);
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .order-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        [data-theme="dark"] .order-meta {
+            color: #999;
+        }
+        
+        .order-items {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 8px;
+        }
+        
+        [data-theme="dark"] .order-items {
+            background: rgba(0, 0, 0, 0.3);
+        }
+        
+        .order-items ul {
+            list-style: none;
+            padding-left: 10px;
+            margin-top: 5px;
+        }
+        
+        .order-items li {
+            padding: 3px 0;
+        }
+        
+        .order-notes {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #E3F2FD;
+            border-left: 3px solid #2196F3;
+            border-radius: 5px;
+            font-style: italic;
+        }
+        
+        [data-theme="dark"] .order-notes {
+            background: #1a2a3a;
+            border-left-color: #42A5F5;
+        }
+        
+        .btn-pickup {
+            background: linear-gradient(135deg, #4CAF50 0%, #66BB6A 100%);
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.3s ease;
+            box-shadow: 0 3px 10px rgba(76, 175, 80, 0.3);
+        }
+        
+        .btn-pickup:hover {
+            background: linear-gradient(135deg, #388E3C 0%, #4CAF50 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.5);
+        }
+        
+        .btn-pickup:active {
+            transform: translateY(0);
+        }
+        
+        .no-orders {
+            text-align: center;
+            padding: 30px;
+            color: #757575;
+            font-style: italic;
+        }
+        
+        [data-theme="dark"] .no-orders {
+            color: #999;
+        }
+        
         /* Responsive */
         @media (max-width: 768px) {
             .header h1 {
@@ -523,6 +726,10 @@
             }
             
             .order-info {
+                grid-template-columns: 1fr;
+            }
+            
+            .orders-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -636,6 +843,12 @@
             <button class="submit-btn" onclick="submitOrder()" id="submitBtn" disabled>
                 📋 Invia Ordine
             </button>
+        </div>
+        
+        <!-- Ordini Pronti da Ritirare dalla Cucina -->
+        <div class="orders-section ready-orders-section" id="readyOrdersSection" style="display: none;">
+            <h2 class="section-title">🔔 Ordini Pronti da Ritirare dalla Cucina</h2>
+            <div id="ready-orders" class="orders-grid"></div>
         </div>
     </div>
     
@@ -840,7 +1053,142 @@
         
         socket.on('order_updated', (data) => {
             console.log('Order updated:', data);
+            // Refresh ready orders when an order is updated
+            loadReadyOrders();
         });
+        
+        // Listen for order ready for pickup notification
+        socket.on('order_ready_for_pickup', (data) => {
+            console.log('Ordine pronto ricevuto:', data);
+            
+            // Browser notification
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('🔔 Ordine Pronto da Ritirare', {
+                    body: data.message,
+                    vibrate: [200, 100, 200],
+                    requireInteraction: true,
+                    tag: `order-ready-${data.order_id}`
+                });
+            }
+            
+            // Play notification sound
+            playNotificationSound();
+            
+            // Refresh ready orders list
+            loadReadyOrders();
+        });
+        
+        // ===== ORDINI PRONTI DA RITIRARE =====
+        
+        // Load ready orders for waiter
+        function loadReadyOrders() {
+            fetch('/lacomanda/api/my-ready-orders')
+                .then(r => r.json())
+                .then(orders => {
+                    const container = document.getElementById('ready-orders');
+                    const section = document.getElementById('readyOrdersSection');
+                    
+                    if (!container || !section) return;
+                    
+                    container.innerHTML = '';
+                    
+                    if (orders.length === 0) {
+                        section.style.display = 'none';
+                        return;
+                    }
+                    
+                    section.style.display = 'block';
+                    
+                    orders.forEach(order => {
+                        // Calculate minutes since prepared
+                        const preparedTime = new Date(order.prepared_timestamp);
+                        const now = new Date();
+                        const minutesReady = Math.floor((now - preparedTime) / 1000 / 60);
+                        
+                        // Create order card
+                        const card = document.createElement('div');
+                        card.className = 'order-card ready-order';
+                        
+                        // Add urgent class if > 5 minutes
+                        if (minutesReady >= 5) {
+                            card.classList.add('urgent');
+                        }
+                        
+                        card.innerHTML = `
+                            <div class="order-header">
+                                <h3 class="order-table">🔥 Tavolo ${order.table}</h3>
+                                <span class="ready-time ${minutesReady >= 5 ? 'urgent' : ''}">
+                                    ⏰ Pronto da ${minutesReady} minuti
+                                </span>
+                            </div>
+                            <div class="order-meta">
+                                <span>Ordine #${order.id}</span>
+                                <span>Persone: ${order.people}</span>
+                            </div>
+                            <div class="order-items">
+                                <strong>Piatti:</strong>
+                                <ul>
+                                    ${order.items.map(i => `<li>${i.quantity}x ${i.name}</li>`).join('')}
+                                </ul>
+                            </div>
+                            ${order.notes ? `<div class="order-notes">📝 ${order.notes}</div>` : ''}
+                            <button onclick="pickupOrder(${order.id})" class="btn-pickup">
+                                ✅ Ritira e Consegna al Tavolo
+                            </button>
+                        `;
+                        
+                        container.appendChild(card);
+                    });
+                })
+                .catch(err => {
+                    console.error('Errore caricamento ordini pronti:', err);
+                });
+        }
+        
+        // Pickup order from kitchen
+        function pickupOrder(orderId) {
+            if (!confirm('Confermi di aver ritirato l\'ordine dalla cucina?\n\nL\'ordine sarà segnato come "In Consegna".')) {
+                return;
+            }
+            
+            fetch('/lacomanda/api/pickup-order', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({order_id: orderId})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('✅ Ordine ritirato! Ora in consegna al tavolo', '#2ECC71');
+                    loadReadyOrders();
+                } else {
+                    showNotification('❌ Errore: ' + data.error, '#E74C3C');
+                }
+            })
+            .catch(err => {
+                showNotification('❌ Errore di rete', '#E74C3C');
+                console.error('Errore pickup:', err);
+            });
+        }
+        
+        // Play notification sound
+        function playNotificationSound() {
+            try {
+                const audio = new Audio('/static/notification.mp3');
+                audio.play().catch(e => console.log('Audio playback failed:', e));
+            } catch(e) {
+                console.log('Audio not available');
+            }
+        }
+        
+        // Request notification permission on load
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+        
+        // Load ready orders on page load and refresh every 30 seconds
+        loadReadyOrders();
+        setInterval(loadReadyOrders, 30000);
         
         // Initialize - collapse all categories by default
         document.addEventListener('DOMContentLoaded', () => {
