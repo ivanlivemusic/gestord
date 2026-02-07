@@ -1078,6 +1078,27 @@
             loadReadyOrders();
         });
         
+        // Listen for general reminders (CI timeout, CD pickup reminders, etc.)
+        socket.on('reminder', (data) => {
+            console.log('Reminder ricevuto:', data);
+            
+            // Show browser notification
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('⚠️ LA COMANDA - Reminder', {
+                    body: data.message,
+                    vibrate: [300, 100, 300],
+                    requireInteraction: true,
+                    tag: `reminder-${data.order_id}`
+                });
+            }
+            
+            // Play notification sound
+            playNotificationSound();
+            
+            // Show toast notification on page
+            showNotification(data.message, data.urgent ? '#FF6B35' : '#FFA500');
+        });
+        
         // ===== ORDINI PRONTI DA RITIRARE =====
         
         // Load ready orders for waiter
