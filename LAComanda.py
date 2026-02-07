@@ -134,6 +134,46 @@ CATEGORY_ICONS = {
 }
 
 # ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
+
+def create_dialog_with_scrollbar(parent, title, width, height):
+    """Pattern standard per dialog con scrollbar e pulsanti fissi
+    
+    Returns:
+        tuple: (scrollable_frame, button_frame, dialog)
+            - scrollable_frame: Frame dove inserire il contenuto scrollabile
+            - button_frame: Frame dove inserire i pulsanti (sempre visibili in basso)
+            - dialog: La finestra Toplevel creata
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.geometry(f"{width}x{height}")
+    dialog.resizable(True, True)
+    
+    # Canvas con scrollbar per contenuto
+    canvas = tk.Canvas(dialog, bg=COLORS['background'])
+    scrollbar = tk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+    scrollable_frame = tk.Frame(canvas, bg=COLORS['background'])
+    
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+    
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    
+    # Frame pulsanti FISSO in basso (fuori canvas)
+    button_frame = tk.Frame(dialog, bg='#F0F0F0', relief='raised', borderwidth=2)
+    button_frame.pack(side='bottom', fill='x', pady=5, padx=5)
+    
+    canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+    scrollbar.pack(side="right", fill="y")
+    
+    return scrollable_frame, button_frame, dialog
+
+# ==============================================================================
 # DATABASE MANAGEMENT
 # ==============================================================================
 
@@ -5018,8 +5058,12 @@ class KitchenDisplay:
             # Posizionamento ordini
             target_column = None
             
-            if reminder_icon:
-                # Ordine con reminder va in colonna REMINDER
+            # PRIORITÀ: Se ordine ha il flag needs_kitchen_reminder, va in colonna REMINDER
+            if order.get('needs_kitchen_reminder'):
+                target_column = 'reminder'
+                reminder_icon = REMINDER_ICONS['urgent']  # Force urgent icon
+            elif reminder_icon == REMINDER_ICONS['urgent']:
+                # Ordine urgente va in colonna REMINDER
                 target_column = 'reminder'
             elif tipo == 'CD' and state == 'inserito':
                 target_column = 'inserito'
