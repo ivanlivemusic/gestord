@@ -869,6 +869,17 @@
     <script>
         const cart = {};
         const socket = io();
+        const waiterName = {{ waiter_name|tojson }};
+        
+        // Join waiter room for reminders on connect
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            socket.emit('join_waiter_room', { waiter_name: waiterName });
+        });
+        
+        socket.on('room_joined', (data) => {
+            console.log('Joined room:', data.room);
+        });
         
         // Order Type handling
         const orderTypeRadios = document.querySelectorAll('input[name="orderType"]');
@@ -1061,11 +1072,6 @@
                 notification.remove();
             }, 3000);
         }
-        
-        // Socket.io listeners
-        socket.on('connect', () => {
-            console.log('Connected to server');
-        });
         
         socket.on('order_updated', (data) => {
             console.log('Order updated:', data);

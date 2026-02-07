@@ -35,6 +35,8 @@ maximized = False
 # IMPORTANTE: NON committare il token nel repository - aggiungerlo solo localmente
 # Esempio: authtoken = YOUR_TOKEN_HERE
 authtoken = 
+# Regione del server ngrok (us, eu, ap, au, sa, jp, in)
+region = us 
 
 [Reminders]
 ci_timeout = 10
