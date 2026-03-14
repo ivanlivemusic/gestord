@@ -1,0 +1,60 @@
+# ============================================================
+# requirements_quiz.txt -- dipendenze per genera_quiz_pexels3.py
+#
+# Installazione:
+#   pip install -r requirements_quiz.txt
+#
+# NOTA: separato da requirements.txt (Flask/PyQt) per evitare
+#       conflitti di versione e ambienti pesanti.
+#
+# Modelli scaricati automaticamente al primo uso:
+#   - CLIP:    openai/clip ViT-B/32  (da HuggingFace/PyTorch Hub)
+#   - BLIP:    Salesforce/blip-vqa-base  (~960 MB, HuggingFace)
+#   - YOLO:    yolov8n.pt  (~6 MB, ultralytics CDN)
+#   - OWLv2:   google/owlvit-base-patch32  (HuggingFace)
+#   - Whisper: whisper tiny  (faster-whisper, se --enable-asr)
+#
+# Per OCR (--enable-ocr) serve anche il binario tesseract-ocr:
+#   Ubuntu/Debian: sudo apt install tesseract-ocr tesseract-ocr-ita
+#   macOS:         brew install tesseract
+#   Windows:       https://github.com/UB-Mannheim/tesseract/wiki
+# ============================================================
+
+# ---- Core async / HTTP ----
+aiohttp>=3.9.0
+aiofiles>=23.0.0
+requests>=2.31.0
+
+# ---- Video / image processing ----
+ffmpeg-python>=0.2.0
+Pillow>=10.0.0
+
+# ---- CLIP ----
+openai-clip>=1.0.1
+# or: git+https://github.com/openai/CLIP.git
+
+# ---- PyTorch (CPU-compatible; install GPU version separately if needed) ----
+# See https://pytorch.org/get-started/locally/ for GPU builds.
+torch>=2.1.0
+torchvision>=0.16.0
+
+# ---- HuggingFace Transformers (BLIP VQA + OWLv2) ----
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# ---- YOLO ----
+ultralytics>=8.0.0
+
+# ---- Shot detection (keyframe extraction) ----
+scenedetect[opencv]>=0.6.2
+
+# ---- ASR (optional — enable via --enable-asr) ----
+# CPU-friendly int8 inference
+faster-whisper>=0.10.0
+
+# ---- OCR (optional — enable via --enable-ocr) ----
+# Requires tesseract-ocr system binary (see note above)
+pytesseract>=0.3.10
+
+# ---- Misc ----
+numpy>=1.24.0

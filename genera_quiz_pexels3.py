@@ -1,22 +1,49 @@
 #!/usr/bin/env python3
 """
-Quiz Video Generator (PEXELS) - template ESCLUSI.
+Quiz Video Generator (PEXELS) - Multi-module majority-vote pipeline.
 
-Pipeline:
-1) ORIENTATION gate (PRIMA COSA): rifiuta video verticali (h > w)
-2) CLIP ONLY (severo ma fattibile su CPU):
-   - 4 frame per video
-   - threshold 0.24
-   - min_matches 2 (>=2 frame su 4 devono matchare)
-   - se CLIP KO -> REJECT definitivo (delete RAW)
-   - se CLIP OK -> ACCEPT -> encode -> scrivi domanda
+================================================================================
+PIPELINE (in ordine):
+1) ORIENTATION gate (hard): rifiuta video verticali (h > w)
+2) Shot detection + keyframe extraction (PySceneDetect o ffmpeg uniform)
+3) CLIP (2 frame, threshold 0.24, min_matches 1)
+4) Extra checks per macro-categoria (majority vote):
+   - objects/animals/vehicles/food/tech/plants:
+       YOLO (yolov8n) + OWLv2 grounding + BLIP VQA + IOU tracking
+   - colors:    Color analysis (HSV) + BLIP VQA
+   - lighting:  Photometric analysis + BLIP VQA
+   - actions/dance/music/sports: BLIP VQA + YOLO (supporto)
+   - weather/seasons/emotions:   BLIP VQA
+   - mixed (family/jobs/places/travel/...): BLIP VQA
+5) Majority vote: ACCEPT se pass_count > total/2 E almeno 1 check "forte" OK
+6) ASR (faster-whisper, disabilitato di default: --enable-asr)
+7) OCR (pytesseract, disabilitato di default: --enable-ocr)
+8) Concept coherence: il label in MAIUSCOLO nel filename deve essere rilevato
 
-IMPORTANTE (richiesta utente):
+MODULI (auto-download al primo uso, nessun download manuale richiesto):
+- CLIP: openai/clip ViT-B/32
+- BLIP VQA: Salesforce/blip-vqa-base (~960MB, HuggingFace)
+- YOLO: yolov8n.pt (~6MB, ultralytics)
+- OWLv2/OWLViT: google/owlvit-base-patch32 (HuggingFace)
+- Shot detection: scenedetect (PySceneDetect) + fallback uniform sampling
+- ASR (opzionale): faster-whisper tiny
+- OCR (opzionale): pytesseract + tesseract-ocr (installazione sistema richiesta)
+
+FLAGS CLI:
+  --no-blip            Disabilita BLIP VQA
+  --no-yolo            Disabilita YOLO
+  --no-grounding       Disabilita OWLv2 grounding
+  --enable-asr         Abilita ASR (lento su CPU)
+  --enable-ocr         Abilita OCR (richiede tesseract-ocr)
+  --no-tracking        Disabilita IOU tracking
+  --yolo-conf FLOAT    Soglia confidenza YOLO (default 0.30)
+  --owlv2-thresh FLOAT Soglia OWLv2 (default 0.10)
+  --extra-workers INT  Thread pool per extra checks (default 4)
+
+IMPORTANT:
 - RIMOSSO il batch "10 download OK pausa / resume dopo 5 domande".
 - Restano solo i limiti RAW budget (raw_cap_gb/raw_resume_ratio).
-
-Template:
-- questo file ESCLUDE il dizionario TEMPLATES (incollalo tu nel placeholder).
+- Il dizionario TEMPLATES è incluso completo nel file.
 """
 
 import argparse
@@ -27,8 +54,9 @@ import random
 import re
 import shutil
 import subprocess
+import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -70,8 +98,8 @@ DEFAULT_HEVC_TAG = "hvc1"
 
 # CLIP defaults (pratici)
 DEFAULT_CLIP_THRESHOLD = 0.24
-DEFAULT_CLIP_MIN_MATCHES = 2
-DEFAULT_CLIP_FRAMES = 4
+DEFAULT_CLIP_MIN_MATCHES = 1
+DEFAULT_CLIP_FRAMES = 2
 
 # RAW budget defaults
 DEFAULT_RAW_CAP_GB = 10.0
@@ -88,12 +116,20 @@ DEFAULT_PEXELS_MIN_DURATION = 30
 LabelKeywords = Union[str, List[str]]
 IS_WINDOWS = (os.name == "nt")
 
-
 # ============================================================
-#                 TEMPLATES PLACEHOLDER (EXCLUDED)
+#   EXTRA MODULE FEATURE FLAGS
 # ============================================================
+DEFAULT_ENABLE_BLIP = True
+DEFAULT_ENABLE_YOLO = True
+DEFAULT_ENABLE_GROUNDING = True
+DEFAULT_ENABLE_ASR = False        # slow on CPU — opt-in via --enable-asr
+DEFAULT_ENABLE_OCR = False        # needs tesseract-ocr binary — opt-in via --enable-ocr
+DEFAULT_ENABLE_TRACKING = True
+DEFAULT_YOLO_CONF = 0.30
+DEFAULT_OWLV2_THRESH = 0.10
+DEFAULT_EXTRA_WORKERS = 4
 
-TEMPLATES: Dict[str, Dict[str, Any]] = {}
+
 # ============================================================
 #                 TEMPLATES (FULL)
 # ============================================================
@@ -168,7 +204,7 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
         "CANGURO": ["kangaroo", "kangaroos", "kangaroo wildlife", "kangaroo australia"],
         "BRADIPO": ["sloth", "sloths", "sloth animal", "sloth tree"],
         "PUMA": ["cougar", "puma", "mountain lion", "puma wildlife"],
-        "IPPPOPOTAMO": ["hippopotamus", "hippo", "hippos", "hippo river"],
+        "IPPOPOTAMO": ["hippopotamus", "hippo", "hippos", "hippo river"],
         "CINGHIALE": ["wild boar", "boar", "wild boar forest", "boar wildlife"],
     }},
     "animals_sea": {"question": "Quale animale marino vedi nel video?", "labels": {
@@ -569,6 +605,158 @@ def assert_templates_min_labels(min_labels: int = 10):
 
 
 # ============================================================
+#   TEMPLATE MACRO-CATEGORIES (per specializzazione check)
+# ============================================================
+
+TEMPLATE_CATEGORY: Dict[str, str] = {
+    # object-like: YOLO + OWLv2 + CLIP + tracking + BLIP
+    "animals": "objects",
+    "animals_wild": "objects",
+    "animals_more": "objects",
+    "animals_sea": "objects",
+    "vehicles": "objects",
+    "vehicles_2": "objects",
+    "objects": "objects",
+    "food": "objects",
+    "food_2": "objects",
+    "drinks": "objects",
+    "tech": "objects",
+    "tech_2": "objects",
+    "plants": "objects",
+    # colors: dominant color analysis + CLIP + BLIP
+    "colors": "colors",
+    "colors_2": "colors",
+    # lighting: photometric analysis + CLIP + BLIP
+    "lighting": "lighting",
+    # actions: BLIP VQA + CLIP (+ YOLO supporto)
+    "sports": "actions",
+    "sports_2": "actions",
+    "sports_3": "actions",
+    "people_actions": "actions",
+    "dance": "actions",
+    "concert": "actions",
+    "music": "actions",
+    # VLM-primary: BLIP VQA + CLIP
+    "emotions": "vlm",
+    "weather": "vlm",
+    "weather_2": "vlm",
+    "seasons": "vlm",
+    # mixed: CLIP + BLIP VQA
+    "family": "mixed",
+    "jobs": "mixed",
+    "jobs_2": "mixed",
+    "jobs_3": "mixed",
+    "places": "mixed",
+    "places_2": "mixed",
+    "travel": "mixed",
+    "nature": "mixed",
+    "nature_2": "mixed",
+    "gaming": "mixed",
+    "traffic": "mixed",
+}
+
+# ============================================================
+#   YOLO label map: IT label -> COCO class names (yolov8n)
+# ============================================================
+
+YOLO_LABEL_MAP: Dict[str, List[str]] = {
+    # Animals (domestic)
+    "CANE": ["dog"], "GATTO": ["cat"], "CAVALLO": ["horse"],
+    "CONIGLIO": ["rabbit"], "PAPPAGALLO": ["bird"], "TARTARUGA": [],
+    "PESCE": [], "CRICETO": [], "GALLINA": ["bird"],
+    # Animals (wild)
+    "LEONE": ["cat"], "ELEFANTE": ["elephant"], "GIRAFFA": ["giraffe"],
+    "TIGRE": ["cat"], "ZEBRA": ["zebra"], "RINOCERONTE": [],
+    "ORSO": ["bear"], "LUPO": ["dog"], "CERVO": [],
+    "LEOPARDO": ["cat"], "PANDA": ["bear"], "VOLPE": ["dog"],
+    "SCIMMIA": [], "PROCIONE": [], "GUFO": ["bird"],
+    "CANGURO": [], "BRADIPO": [], "PUMA": ["cat"],
+    "IPPOPOTAMO": [], "CINGHIALE": [],
+    # Sea animals
+    "DELFINO": [], "SQUALO": [], "BALENA": [],
+    "MEDUSA": [], "POLPO": [], "FOCA": [],
+    "LEONE_MARINO": [], "PESCE_PALLA": [], "MANTA": [],
+    # Vehicles
+    "AUTO": ["car"], "MOTO": ["motorcycle"], "TRENO": ["train"],
+    "CAMION": ["truck"], "AUTOBUS": ["bus"], "BICICLETTA": ["bicycle"],
+    "BARCA": ["boat"], "AEREO": ["airplane"], "TRATTORE": ["truck"],
+    "MONOPATTINO": ["bicycle"], "METRO": ["train"], "TRAM": ["train"],
+    "ELICOTTERO": ["airplane"], "SKATE": ["skateboard"],
+    "TRAGHETTO": ["boat"], "MONGOLFIERA": [], "TAXI": ["car"],
+    # Objects
+    "LIBRO": ["book"], "OROLOGIO": ["clock"], "CHIAVI": [],
+    "OCCHIALI": [], "PENNA": [], "FIORE": [],
+    "TAZZA": ["cup"], "CANDINA": [], "ZAINO": ["backpack"],
+    "OMBRELLO": ["umbrella"],
+    # Food
+    "PIZZA": ["pizza"], "SUSHI": [], "HAMBURGER": ["sandwich"],
+    "PASTA": [], "INSALATA": [], "TACOS": ["sandwich"],
+    "STEAK": [], "ZUPPA": [], "PANCAKES": [],
+    "FRUTTA": ["apple", "banana", "orange"],
+    "TORTA": ["cake"], "GELATO": [], "BISCOTTI": [],
+    "CIOCCOLATO": [], "CUPCAKE": [], "CROISSANT": [],
+    "DONUT": ["donut"], "TIRAMISU": [], "MACARON": [],
+    "PUDDING": [],
+    # Drinks
+    "CAFFE": [], "TE": [], "SUCCO": [],
+    "BIRRA": [], "VINO": ["wine glass"],
+    "COCKTAIL": [], "ACQUA": ["bottle"],
+    "LATTE": [], "SMOOTHIE": [], "ENERGY_DRINK": ["bottle"],
+    # Plants
+    "FIORI": [], "ALBERI": [], "CACTUS": [], "PALMA": [],
+    "BAMBU": [], "ROSA": [], "TULIPANI": [],
+    "GIRASOLE": [], "ORCHIDEA": [], "BONSAI": [],
+    # Tech
+    "SMARTPHONE": ["cell phone"], "COMPUTER": ["laptop"],
+    "DRONE": [], "TABLET": [], "FOTOCAMERA": [],
+    "CUFFIE": [], "SMARTWATCH": [],
+    "ROBOT": [], "VR": [], "STAMPANTE_3D": [],
+    "MICROFONO": [], "TASTIERA": ["keyboard"],
+    "MOUSE": ["mouse"], "MONITOR": ["tv"],
+    "ROUTER": [], "CAVO_USB": [], "POWERBANK": [],
+}
+
+# ============================================================
+#   COLOR ANALYSIS CONFIG (OpenCV-like HSV: H=0-180, S=0-255, V=0-255)
+# ============================================================
+
+COLOR_ANALYSIS_CONFIG: Dict[str, Any] = {
+    "ROSSO": {
+        "type": "hsv_double",
+        "range1": [(0, 50, 50), (10, 255, 255)],
+        "range2": [(170, 50, 50), (180, 255, 255)],
+        "threshold": 0.15,
+    },
+    "BLU": {"type": "hsv", "range": [(100, 50, 50), (130, 255, 255)], "threshold": 0.15},
+    "VERDE": {"type": "hsv", "range": [(40, 50, 50), (80, 255, 255)], "threshold": 0.15},
+    "GIALLO": {"type": "hsv", "range": [(20, 100, 80), (40, 255, 255)], "threshold": 0.12},
+    "ARANCIONE": {"type": "hsv", "range": [(10, 100, 80), (22, 255, 255)], "threshold": 0.12},
+    "VIOLA": {"type": "hsv", "range": [(130, 40, 40), (160, 255, 255)], "threshold": 0.10},
+    "ROSA": {"type": "hsv", "range": [(150, 30, 100), (175, 255, 255)], "threshold": 0.10},
+    "NERO": {"type": "brightness", "max_v": 50, "threshold": 0.35},
+    "BIANCO": {"type": "brightness_high", "min_v": 200, "min_s_inv": 30, "threshold": 0.30},
+    "GRIGIO": {"type": "gray", "max_s": 40, "min_v": 50, "max_v": 200, "threshold": 0.30},
+}
+
+# ============================================================
+#   PHOTOMETRIC ANALYSIS CONFIG (per "lighting" template)
+# ============================================================
+
+PHOTOMETRIC_CONFIG: Dict[str, Dict[str, Any]] = {
+    "NOTTE": {"rule": "dark", "max_mean_brightness": 80},
+    "TRAMONTO": {"rule": "warm_colors", "warm_ratio": 0.20},
+    "ALBA": {"rule": "warm_colors", "warm_ratio": 0.15},
+    "NEON": {"rule": "saturated", "sat_ratio": 0.25},
+    "LUCE_NATURALE": {"rule": "bright_contrasty", "min_mean_brightness": 120, "min_contrast": 30},
+    "CONTROLUCE": {"rule": "silhouette", "silhouette_ratio": 0.15},
+    "STUDIO": {"rule": "contrasty", "min_contrast": 25},
+    "LAMPADINE": {"rule": "warm_colors", "warm_ratio": 0.20},
+    "LUCE_FREDDA": {"rule": "cool_colors", "cool_ratio": 0.20},
+    "LUCE_CALDA": {"rule": "warm_colors", "warm_ratio": 0.25},
+}
+
+
+# ============================================================
 #                 SECRETS (only PEXELS)
 # ============================================================
 
@@ -953,6 +1141,10 @@ def append_decisions_csv(csv_path: str, row: Dict[str, Any]) -> None:
         "raw_path", "mp4_path",
         "w", "h", "vertical",
         "clip_ok",
+        # majority vote summary
+        "vote_pass", "vote_total", "vote_strong_pass", "vote_strong_total",
+        # per-check results (JSON)
+        "checks_json",
         "decision", "reason",
         "trace",
     ]
@@ -1160,8 +1352,641 @@ def clip_worker(args):
 
 
 # ============================================================
-#                 FFMPEG
+#   NEW MODULES: shot detection, BLIP VQA, YOLO, OWLv2,
+#                color analysis, photometric, ASR, OCR, tracking
+#
+# Design: thread-safe lazy loading via module-level globals + locks.
+# All models auto-download on first use from HuggingFace Hub / ultralytics.
+# All functions return {"ok": bool|None, ...} where ok=None means skipped/error.
 # ============================================================
+
+import threading as _threading
+
+_BLIP_LOCK = _threading.Lock()
+_YOLO_LOCK = _threading.Lock()
+_OWLV2_LOCK = _threading.Lock()
+_WHISPER_LOCK = _threading.Lock()
+
+_BLIP_PROC = None
+_BLIP_MODEL_VQA = None
+_YOLO_MODEL_OBJ = None
+_OWLV2_PROC = None
+_OWLV2_MODEL_OBJ = None
+_WHISPER_MODEL_OBJ = None
+
+
+def _load_blip_vqa():
+    """Lazy-load Salesforce/blip-vqa-base (~960 MB, auto-downloads from HuggingFace)."""
+    global _BLIP_PROC, _BLIP_MODEL_VQA
+    with _BLIP_LOCK:
+        if _BLIP_PROC is None:
+            from transformers import BlipProcessor, BlipForQuestionAnswering
+            _BLIP_PROC = BlipProcessor.from_pretrained("Salesforce/blip-vqa-base")
+            _BLIP_MODEL_VQA = BlipForQuestionAnswering.from_pretrained("Salesforce/blip-vqa-base")
+            _BLIP_MODEL_VQA.eval()
+    return _BLIP_PROC, _BLIP_MODEL_VQA
+
+
+def _load_yolo():
+    """Lazy-load YOLOv8n (~6 MB, auto-downloads from ultralytics CDN)."""
+    global _YOLO_MODEL_OBJ
+    with _YOLO_LOCK:
+        if _YOLO_MODEL_OBJ is None:
+            from ultralytics import YOLO
+            _YOLO_MODEL_OBJ = YOLO("yolov8n.pt")
+    return _YOLO_MODEL_OBJ
+
+
+def _load_owlv2():
+    """Lazy-load google/owlvit-base-patch32 (auto-downloads from HuggingFace)."""
+    global _OWLV2_PROC, _OWLV2_MODEL_OBJ
+    with _OWLV2_LOCK:
+        if _OWLV2_PROC is None:
+            from transformers import OwlViTProcessor, OwlViTForObjectDetection
+            _OWLV2_PROC = OwlViTProcessor.from_pretrained("google/owlvit-base-patch32")
+            _OWLV2_MODEL_OBJ = OwlViTForObjectDetection.from_pretrained("google/owlvit-base-patch32")
+            _OWLV2_MODEL_OBJ.eval()
+    return _OWLV2_PROC, _OWLV2_MODEL_OBJ
+
+
+def _load_whisper():
+    """Lazy-load faster-whisper tiny (auto-downloads, CPU int8)."""
+    global _WHISPER_MODEL_OBJ
+    with _WHISPER_LOCK:
+        if _WHISPER_MODEL_OBJ is None:
+            from faster_whisper import WhisperModel
+            _WHISPER_MODEL_OBJ = WhisperModel("tiny", device="cpu", compute_type="int8")
+    return _WHISPER_MODEL_OBJ
+
+
+# ---- Shot detection + keyframe extraction ----
+
+def extract_keyframes_for_validation(
+    video_path: str,
+    frames_base_dir: str,
+    duration: float,
+    n_frames: int = 5,
+    *,
+    keep: bool = False,
+) -> Tuple[List[str], Optional[str]]:
+    """
+    Extract keyframes from video for all checks.
+    Tries PySceneDetect first; falls back to uniform sampling.
+    Returns (frame_paths, cleanup_dir).  cleanup_dir is None when keep=True.
+    """
+    base = Path(video_path).stem[:60]
+    if keep:
+        kf_dir = os.path.join(frames_base_dir, base)
+        cleanup_dir: Optional[str] = None
+    else:
+        kf_dir = tempfile.mkdtemp(prefix=f"kf_{base[:30]}_")
+        cleanup_dir = kf_dir
+    os.makedirs(kf_dir, exist_ok=True)
+
+    # Try PySceneDetect
+    try:
+        from scenedetect import open_video, SceneManager
+        from scenedetect.detectors import ContentDetector
+        video = open_video(video_path)
+        sm = SceneManager()
+        sm.add_detector(ContentDetector(threshold=27.0))
+        sm.detect_scenes(video, show_progress=False)
+        scenes = sm.get_scene_list()
+        times = [float(s[0].get_seconds()) for s in scenes]
+        if len(times) > n_frames:
+            step = len(times) / n_frames
+            times = [times[int(i * step)] for i in range(n_frames)]
+        if not times:
+            raise RuntimeError("no_scenes")
+        frames: List[str] = []
+        for i, t in enumerate(times[:n_frames]):
+            fp = os.path.join(kf_dir, f"scene_{i:03d}.jpg")
+            ss = float(min(t, max(0.0, duration - 0.5)))
+            if extract_frame(video_path, fp, ss=ss):
+                frames.append(fp)
+        if frames:
+            return frames, cleanup_dir
+    except Exception:
+        pass
+
+    # Fallback: uniform sampling
+    frames = []
+    seconds = pick_frame_seconds_from_duration(duration, n=int(max(1, n_frames)))
+    for i, ss in enumerate(seconds):
+        fp = os.path.join(kf_dir, f"uni_{i:03d}.jpg")
+        if extract_frame(video_path, fp, ss=float(ss)):
+            frames.append(fp)
+    return frames, cleanup_dir
+
+
+# ---- BLIP VQA check ----
+
+def _build_blip_question(concept_en: str, template_cat: str, label_it: str) -> str:
+    """Build a yes/no VQA question for BLIP based on template category."""
+    c = concept_en.strip()
+    label = label_it.strip().upper()
+    COLOR_EN: Dict[str, str] = {
+        "NERO": "black", "BIANCO": "white", "ROSSO": "red", "BLU": "blue",
+        "VERDE": "green", "GIALLO": "yellow", "ARANCIONE": "orange",
+        "VIOLA": "purple", "ROSA": "pink", "GRIGIO": "gray",
+    }
+    if template_cat == "colors":
+        en_color = COLOR_EN.get(label, c)
+        return f"Is the predominant color {en_color}?"
+    if template_cat == "lighting":
+        return f"Is the scene lit by {c}?"
+    if template_cat in ("actions", "vlm"):
+        return f"Are there {c} in this image?"
+    return f"Is there {c} in this image?"
+
+
+def check_blip_vqa(
+    frame_paths: List[str],
+    question: str,
+    device: str = "cpu",
+) -> Dict[str, Any]:
+    """
+    Run BLIP VQA (yes/no) on keyframes.
+    Returns ok=True if majority of frames answer 'yes'.
+    Model: Salesforce/blip-vqa-base — auto-downloads on first call.
+    """
+    if not frame_paths:
+        return {"ok": None, "error": "no_frames"}
+    try:
+        proc, model = _load_blip_vqa()
+        dev = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
+        model = model.to(dev)
+        yes_count = 0
+        answers: List[str] = []
+        for fp in frame_paths:
+            try:
+                img = Image.open(fp).convert("RGB")
+                inputs = proc(images=img, text=question, return_tensors="pt").to(dev)
+                with torch.no_grad():
+                    out = model.generate(**inputs, max_new_tokens=10)
+                answer = proc.decode(out[0], skip_special_tokens=True).strip().lower()
+                answers.append(answer)
+                if "yes" in answer:
+                    yes_count += 1
+            except Exception:
+                continue
+        total = len(answers)
+        ok = (total > 0) and (yes_count > total / 2)
+        return {"ok": ok, "yes_count": yes_count, "total": total,
+                "sample_answers": answers[:3], "question": question}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- YOLO detection check ----
+
+def get_yolo_classes_for_label(label_it: str) -> List[str]:
+    """Return COCO class names for an Italian label, [] if not mappable."""
+    return YOLO_LABEL_MAP.get(label_it.upper(), [])
+
+
+def check_yolo_on_keyframes(
+    frame_paths: List[str],
+    target_classes: List[str],
+    confidence: float = 0.30,
+) -> Dict[str, Any]:
+    """
+    Run YOLOv8n on keyframes, check if any target class is detected.
+    Model: yolov8n.pt (~6 MB) — auto-downloads on first call.
+    """
+    if not frame_paths:
+        return {"ok": None, "error": "no_frames"}
+    if not target_classes:
+        return {"ok": None, "error": "no_yolo_classes_for_label"}
+    try:
+        model = _load_yolo()
+        tc_lower = [c.lower() for c in target_classes]
+        found: List[str] = []
+        for fp in frame_paths:
+            try:
+                results = model.predict(fp, conf=confidence, verbose=False)
+                for r in results:
+                    if r.boxes is None:
+                        continue
+                    for cls_id in r.boxes.cls.tolist():
+                        cls_name = model.names[int(cls_id)].lower()
+                        if cls_name in tc_lower:
+                            found.append(cls_name)
+            except Exception:
+                continue
+        ok = len(found) > 0
+        return {"ok": ok, "found_classes": found[:10], "target_classes": target_classes}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- OWLv2 (OWLViT) open-vocabulary grounding ----
+
+def check_owlv2_grounding(
+    frame_paths: List[str],
+    concept_en: str,
+    device: str = "cpu",
+    score_threshold: float = 0.10,
+) -> Dict[str, Any]:
+    """
+    Run OWLViT open-vocabulary detection on keyframes.
+    Model: google/owlvit-base-patch32 — auto-downloads on first call.
+    """
+    if not frame_paths:
+        return {"ok": None, "error": "no_frames"}
+    try:
+        proc, model = _load_owlv2()
+        dev = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
+        model = model.to(dev)
+        texts = [[f"a photo of {concept_en}"]]
+        best_score = 0.0
+        for fp in frame_paths:
+            try:
+                img = Image.open(fp).convert("RGB")
+                inputs = proc(text=texts, images=img, return_tensors="pt").to(dev)
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                # logits shape: (1, num_patches, num_queries)
+                logits = outputs.logits[0]  # (num_patches, 1)
+                scores = torch.sigmoid(logits[:, 0])
+                frame_best = float(scores.max().item())
+                best_score = max(best_score, frame_best)
+            except Exception:
+                continue
+        ok = best_score >= score_threshold
+        return {"ok": ok, "best_score": round(best_score, 4), "threshold": score_threshold}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- Color analysis ----
+
+def check_color_analysis(
+    frame_paths: List[str],
+    label_it: str,
+) -> Dict[str, Any]:
+    """
+    Analyze dominant color in keyframes using pixel statistics (numpy + PIL).
+    No extra dependencies beyond PIL and numpy (already required via torch).
+    """
+    if not frame_paths:
+        return {"ok": None, "error": "no_frames"}
+    config = COLOR_ANALYSIS_CONFIG.get(label_it.upper())
+    if config is None:
+        return {"ok": None, "error": f"no_color_config_for_{label_it}"}
+    try:
+        import numpy as np
+        ok_frames = 0
+        total_frames = 0
+        for fp in frame_paths:
+            try:
+                img = Image.open(fp).convert("RGB")
+                arr = np.array(img, dtype=np.float32)
+                h, w = arr.shape[:2]
+                total_px = h * w
+                ctype = config["type"]
+                thr = float(config.get("threshold", 0.15))
+                ok_frame = False
+
+                if ctype == "brightness":
+                    gray = np.mean(arr, axis=2)
+                    pct = float(np.sum(gray < config["max_v"]) / total_px)
+                    ok_frame = pct >= thr
+
+                elif ctype == "brightness_high":
+                    gray = np.mean(arr, axis=2)
+                    diff = np.max(arr, axis=2) - np.min(arr, axis=2)
+                    mask = (gray > config["min_v"]) & (diff < config["min_s_inv"])
+                    pct = float(np.sum(mask) / total_px)
+                    ok_frame = pct >= thr
+
+                elif ctype == "gray":
+                    diff = np.max(arr, axis=2) - np.min(arr, axis=2)
+                    gray = np.mean(arr, axis=2)
+                    mask = (diff < config["max_s"]) & (gray > config["min_v"]) & (gray < config["max_v"])
+                    pct = float(np.sum(mask) / total_px)
+                    ok_frame = pct >= thr
+
+                else:
+                    # HSV-based (pure numpy, no cv2 dependency)
+                    arr_n = arr / 255.0
+                    maxc = np.max(arr_n, axis=2)
+                    minc = np.min(arr_n, axis=2)
+                    diff = maxc - minc
+                    r, g, b = arr_n[:, :, 0], arr_n[:, :, 1], arr_n[:, :, 2]
+                    hue = np.zeros((h, w), dtype=np.float32)
+                    mr = (maxc == r) & (diff > 0)
+                    mg = (maxc == g) & (diff > 0)
+                    mb = (maxc == b) & (diff > 0)
+                    hue[mr] = (60.0 * ((g[mr] - b[mr]) / diff[mr]) % 360.0) / 2.0
+                    hue[mg] = (60.0 * ((b[mg] - r[mg]) / diff[mg] + 2.0) % 360.0) / 2.0
+                    hue[mb] = (60.0 * ((r[mb] - g[mb]) / diff[mb] + 4.0) % 360.0) / 2.0
+                    sat = np.where(maxc > 0, diff / (maxc + 1e-7) * 255.0, 0.0)
+                    val = maxc * 255.0
+
+                    def _hsv_mask(lo, hi):
+                        return (
+                            (hue >= lo[0]) & (hue <= hi[0]) &
+                            (sat >= lo[1]) & (sat <= hi[1]) &
+                            (val >= lo[2]) & (val <= hi[2])
+                        )
+
+                    if ctype == "hsv":
+                        lo, hi = config["range"]
+                        pct = float(np.sum(_hsv_mask(lo, hi)) / total_px)
+                        ok_frame = pct >= thr
+                    elif ctype == "hsv_double":
+                        lo1, hi1 = config["range1"]
+                        lo2, hi2 = config["range2"]
+                        pct = float(np.sum(_hsv_mask(lo1, hi1) | _hsv_mask(lo2, hi2)) / total_px)
+                        ok_frame = pct >= thr
+
+                if ok_frame:
+                    ok_frames += 1
+                total_frames += 1
+            except Exception:
+                continue
+        if total_frames == 0:
+            return {"ok": None, "error": "all_frames_failed"}
+        ok = ok_frames > total_frames / 2
+        return {"ok": ok, "ok_frames": ok_frames, "total_frames": total_frames}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- Photometric analysis (lighting templates) ----
+
+def check_photometric(
+    frame_paths: List[str],
+    label_it: str,
+) -> Dict[str, Any]:
+    """
+    Photometric analysis for lighting templates (luminance, saturation, warm/cool colors).
+    No extra dependencies beyond PIL and numpy.
+    """
+    if not frame_paths:
+        return {"ok": None, "error": "no_frames"}
+    rule_config = PHOTOMETRIC_CONFIG.get(label_it.upper())
+    if rule_config is None:
+        return {"ok": None, "error": f"no_photometric_rule_for_{label_it}"}
+    try:
+        import numpy as np
+        ok_frames = 0
+        total_frames = 0
+        for fp in frame_paths:
+            try:
+                img = Image.open(fp).convert("RGB")
+                arr = np.array(img, dtype=np.float32)
+                gray = np.mean(arr, axis=2)
+                mean_br = float(np.mean(gray))
+                std_br = float(np.std(gray))
+                rule = rule_config["rule"]
+                ok_frame = False
+
+                if rule == "dark":
+                    ok_frame = mean_br < rule_config["max_mean_brightness"]
+                elif rule == "warm_colors":
+                    r_mean = float(np.mean(arr[:, :, 0]))
+                    b_mean = float(np.mean(arr[:, :, 2]))
+                    warm = max(0.0, (r_mean - b_mean) / 255.0)
+                    ok_frame = warm >= rule_config["warm_ratio"]
+                elif rule == "cool_colors":
+                    r_mean = float(np.mean(arr[:, :, 0]))
+                    b_mean = float(np.mean(arr[:, :, 2]))
+                    cool = max(0.0, (b_mean - r_mean) / 255.0)
+                    ok_frame = cool >= rule_config["cool_ratio"]
+                elif rule == "saturated":
+                    maxc = np.max(arr, axis=2)
+                    minc = np.min(arr, axis=2)
+                    sat = np.where(maxc > 0, (maxc - minc) / (maxc + 1e-7), 0.0)
+                    sat_ratio = float(np.mean(sat > 0.5))
+                    ok_frame = sat_ratio >= rule_config["sat_ratio"]
+                elif rule == "bright_contrasty":
+                    ok_frame = (mean_br >= rule_config.get("min_mean_brightness", 100)
+                                and std_br >= rule_config.get("min_contrast", 20))
+                elif rule == "contrasty":
+                    ok_frame = std_br >= rule_config.get("min_contrast", 20)
+                elif rule == "silhouette":
+                    dark_ratio = float(np.sum(gray < 50) / gray.size)
+                    ok_frame = dark_ratio >= rule_config.get("silhouette_ratio", 0.15)
+
+                if ok_frame:
+                    ok_frames += 1
+                total_frames += 1
+            except Exception:
+                continue
+        if total_frames == 0:
+            return {"ok": None, "error": "all_frames_failed"}
+        ok = ok_frames > total_frames / 2
+        return {"ok": ok, "ok_frames": ok_frames, "total_frames": total_frames}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- ASR with faster-whisper ----
+
+def check_asr_transcript(
+    video_path: str,
+    concept_en: str,
+) -> Dict[str, Any]:
+    """
+    Run faster-whisper ASR on video audio, check if concept appears in transcript.
+    Model: whisper tiny (CPU int8) — auto-downloads on first call.
+    Enable via --enable-asr (disabled by default).
+    """
+    try:
+        model = _load_whisper()
+        segments, _ = model.transcribe(video_path, language="en", task="transcribe")
+        text_parts: List[str] = []
+        timestamps: List[Dict[str, Any]] = []
+        for seg in segments:
+            text_parts.append(seg.text)
+            timestamps.append({"start": round(seg.start, 1), "end": round(seg.end, 1), "text": seg.text})
+        full_text = " ".join(text_parts).lower()
+        concept_in_text = concept_en.lower() in full_text
+        return {
+            "ok": True,  # ASR is a support check — not a hard gate
+            "has_concept": concept_in_text,
+            "text_snippet": full_text[:200],
+            "concept": concept_en,
+            "timestamps": timestamps[:5],
+        }
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- OCR on keyframes ----
+
+def check_ocr_keyframes(
+    frame_paths: List[str],
+    concept_en: str,
+) -> Dict[str, Any]:
+    """
+    Run pytesseract OCR on keyframes.
+    Requires: pip install pytesseract AND system-level tesseract-ocr binary.
+    Enable via --enable-ocr (disabled by default).
+    """
+    if not frame_paths:
+        return {"ok": None, "error": "no_frames"}
+    try:
+        import pytesseract
+        texts: List[str] = []
+        for fp in frame_paths:
+            try:
+                img = Image.open(fp)
+                text = pytesseract.image_to_string(img, lang="eng+ita", config="--psm 3")
+                texts.append(text.strip())
+            except Exception:
+                continue
+        combined = " ".join(texts).lower()
+        concept_in_text = concept_en.lower() in combined
+        return {
+            "ok": True,  # OCR is a support check — not a hard gate
+            "has_concept": concept_in_text,
+            "combined_text": combined[:200],
+        }
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- IOU tracking ----
+
+def _compute_iou(
+    box1: Tuple[float, float, float, float],
+    box2: Tuple[float, float, float, float],
+) -> float:
+    """Compute IOU between two boxes (x1, y1, x2, y2) in normalised [0,1] coords."""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    area1 = max(0.0, box1[2] - box1[0]) * max(0.0, box1[3] - box1[1])
+    area2 = max(0.0, box2[2] - box2[0]) * max(0.0, box2[3] - box2[1])
+    union = area1 + area2 - inter
+    return inter / union if union > 0 else 0.0
+
+
+def check_iou_tracking(
+    frame_paths: List[str],
+    label_it: str,
+    device: str = "cpu",
+    iou_threshold: float = 0.30,
+) -> Dict[str, Any]:
+    """
+    Simple IOU-based consistency check: verifies that detected objects appear
+    in at least 2 consecutive keyframes (using YOLO detections).
+    """
+    if len(frame_paths) < 2:
+        return {"ok": None, "error": "need_at_least_2_frames"}
+    target_classes = get_yolo_classes_for_label(label_it)
+    if not target_classes:
+        return {"ok": None, "error": "no_yolo_classes_for_tracking"}
+    try:
+        model = _load_yolo()
+        tc_lower = [c.lower() for c in target_classes]
+        all_boxes: List[List[Tuple[float, float, float, float]]] = []
+        for fp in frame_paths:
+            frame_boxes: List[Tuple[float, float, float, float]] = []
+            try:
+                results = model.predict(fp, conf=0.25, verbose=False)
+                for r in results:
+                    if r.boxes is None:
+                        continue
+                    for cls_id, box in zip(r.boxes.cls.tolist(), r.boxes.xyxyn.tolist()):
+                        if model.names[int(cls_id)].lower() in tc_lower:
+                            frame_boxes.append((float(box[0]), float(box[1]), float(box[2]), float(box[3])))
+            except Exception:
+                pass
+            all_boxes.append(frame_boxes)
+        tracked = False
+        for i in range(len(all_boxes) - 1):
+            for b1 in all_boxes[i]:
+                for b2 in all_boxes[i + 1]:
+                    if _compute_iou(b1, b2) >= iou_threshold:
+                        tracked = True
+                        break
+                if tracked:
+                    break
+            if tracked:
+                break
+        frames_with_det = sum(1 for bx in all_boxes if bx)
+        return {"ok": tracked, "frames_with_detections": frames_with_det}
+    except Exception as e:
+        return {"ok": None, "error": str(e)}
+
+
+# ---- Majority vote gate ----
+
+def majority_vote_gate(
+    clip_ok: bool,
+    extra_results: Dict[str, Dict[str, Any]],
+    template_cat: str,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Apply majority vote across all check results.
+
+    Returns (verdict, reason, details).
+
+    Rules:
+    - Only count checks where ok is not None (non-errored)
+    - "Strong" checks must have at least 1 passing
+    - ACCEPT if pass_count > total/2  AND  strong_pass >= 1 (or no strong applicable)
+
+    Strong checks by template category:
+      objects  -> CLIP, YOLO, OWLv2
+      colors   -> CLIP, COLOR
+      lighting -> CLIP, PHOTO
+      actions  -> CLIP, BLIP
+      vlm      -> CLIP, BLIP
+      mixed    -> CLIP, BLIP
+    """
+    STRONG_BY_CAT: Dict[str, set] = {
+        "objects": {"CLIP", "YOLO", "OWLv2"},
+        "colors": {"CLIP", "COLOR"},
+        "lighting": {"CLIP", "PHOTO"},
+        "actions": {"CLIP", "BLIP"},
+        "vlm": {"CLIP", "BLIP"},
+        "mixed": {"CLIP", "BLIP"},
+    }
+    strong_set = STRONG_BY_CAT.get(template_cat, {"CLIP"})
+
+    all_checks: List[Tuple[str, bool, bool]] = []  # (name, ok, is_strong)
+    all_checks.append(("CLIP", clip_ok, "CLIP" in strong_set))
+
+    for chk_name, res in extra_results.items():
+        ok_val = res.get("ok")
+        if ok_val is None:
+            continue
+        is_strong = chk_name in strong_set
+        all_checks.append((chk_name, bool(ok_val), is_strong))
+
+    pass_count = sum(1 for _, ok, _ in all_checks if ok)
+    fail_count = sum(1 for _, ok, _ in all_checks if not ok)
+    total = len(all_checks)
+    strong_pass = sum(1 for _, ok, is_s in all_checks if ok and is_s)
+    strong_applicable = sum(1 for _, _, is_s in all_checks if is_s)
+
+    majority_ok = (total == 0) or (pass_count > total / 2)
+    strong_ok = (strong_applicable == 0) or (strong_pass >= 1)
+    verdict = majority_ok and strong_ok
+
+    if not majority_ok:
+        reason = f"majority_fail({pass_count}/{total})"
+    elif not strong_ok:
+        reason = f"no_strong_passed(strong_pass={strong_pass}/{strong_applicable})"
+    else:
+        reason = f"majority_ok({pass_count}/{total},strong={strong_pass}/{strong_applicable})"
+
+    details = {
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "total": total,
+        "strong_pass": strong_pass,
+        "strong_applicable": strong_applicable,
+        "checks": {n: ok for n, ok, _ in all_checks},
+    }
+    return verdict, reason, details
 
 def cut_and_strip_audio_copy(src_path: str, dst_path: str, *, seconds: int, ffmpeg_timeout: int):
     exe = ffmpeg_path()
@@ -1367,12 +2192,21 @@ async def validate_worker(
     encode_queue: asyncio.Queue,
     *,
     clip_pool: ProcessPoolExecutor,
+    extra_pool: ThreadPoolExecutor,
     device: str,
     clip_threshold: float,
     clip_min_matches: int,
     clip_frames: int,
     frames_dir: str,
     keep_frames: bool,
+    enable_blip: bool,
+    enable_yolo: bool,
+    enable_grounding: bool,
+    enable_asr: bool,
+    enable_ocr: bool,
+    enable_tracking: bool,
+    yolo_conf: float,
+    owlv2_thresh: float,
     worklog_path: str,
     quiet: bool,
     stats: PipelineStats,
@@ -1386,17 +2220,30 @@ async def validate_worker(
             validate_queue.task_done()
             break
 
-        ctx = {"worker": name, "id": c["id"], "template": c["template"], "label": c["label"], "keyword": c["keyword"], "raw_path": c["raw_path"], "mp4_path": c["mp4_path"]}
+        ctx = {
+            "worker": name, "id": c["id"], "template": c["template"],
+            "label": c["label"], "keyword": c["keyword"],
+            "raw_path": c["raw_path"], "mp4_path": c["mp4_path"],
+        }
 
         def trace(step: str, **data):
             c.setdefault("trace", [])
             c["trace"].append({"step": step, **data})
             log_event(worklog_path, {**ctx, "stage": "TRACE", "action": step, **data}, quiet=quiet, gui_bus=gui_bus)
 
-        def write_decision(*, decision: str, reason: str,
-                           w: int, h: int, vertical: Optional[bool],
-                           clip_ok: Optional[bool]):
-            row = {
+        def write_decision(
+            *,
+            decision: str,
+            reason: str,
+            w: int,
+            h: int,
+            vertical: Optional[bool],
+            clip_ok: Optional[bool],
+            vote_details: Optional[Dict[str, Any]] = None,
+            extra_res: Optional[Dict[str, Dict[str, Any]]] = None,
+        ):
+            vd = vote_details or {}
+            row: Dict[str, Any] = {
                 "ts": now_iso(),
                 "id": c.get("id"),
                 "template": c.get("template"),
@@ -1408,11 +2255,22 @@ async def validate_worker(
                 "h": h,
                 "vertical": vertical,
                 "clip_ok": clip_ok,
+                "vote_pass": vd.get("pass_count", ""),
+                "vote_total": vd.get("total", ""),
+                "vote_strong_pass": vd.get("strong_pass", ""),
+                "vote_strong_total": vd.get("strong_applicable", ""),
+                "checks_json": json.dumps(
+                    {k: v.get("ok") for k, v in (extra_res or {}).items()},
+                    ensure_ascii=False,
+                ),
                 "decision": decision,
                 "reason": reason,
                 "trace": trace_to_str(c.get("trace", [])),
             }
             append_decisions_csv(decisions_csv, row)
+
+        kf_cleanup_dir: Optional[str] = None
+        keyframes: List[str] = []
 
         try:
             if not os.path.exists(c["raw_path"]):
@@ -1422,7 +2280,7 @@ async def validate_worker(
                 validate_queue.task_done()
                 continue
 
-            # ORIENTATION: rifiuta verticali
+            # ---- 1. ORIENTATION gate (hard: vertical rejected immediately) ----
             w, h = get_video_wh(c["raw_path"])
             vertical: Optional[bool] = None
             if w > 0 and h > 0:
@@ -1441,6 +2299,22 @@ async def validate_worker(
             c["duration"] = duration
             log_event(worklog_path, {**ctx, "stage": "FFPROBE", "action": "OK", "duration": duration}, quiet=quiet, gui_bus=gui_bus)
 
+            # ---- 2. Extract keyframes (shot detection or uniform) ----
+            n_kf = max(clip_frames, 4)
+            raw_path_snap = c["raw_path"]
+            n_kf_snap = n_kf
+            dur_snap = duration
+            kf_result = await loop.run_in_executor(
+                extra_pool,
+                lambda: extract_keyframes_for_validation(
+                    raw_path_snap, frames_dir, dur_snap,
+                    n_frames=n_kf_snap, keep=keep_frames,
+                ),
+            )
+            keyframes, kf_cleanup_dir = kf_result
+            log_event(worklog_path, {**ctx, "stage": "KEYFRAMES", "action": "OK", "count": len(keyframes)}, quiet=quiet, gui_bus=gui_bus)
+
+            # ---- 3. CLIP check ----
             rep: List[str] = []
             labels = (TEMPLATES.get(c["template"]) or {}).get("labels") or {}
             for _, kw in labels.items():
@@ -1449,39 +2323,156 @@ async def validate_worker(
                     rep.append(rk)
             rep.append(c["keyword"])
 
-            # CLIP ONLY
             _, clip_data, clip_err = await loop.run_in_executor(
                 None,
                 lambda: clip_pool.submit(
                     clip_worker,
-                    (c["raw_path"], c["keyword"], rep, device, clip_threshold, clip_min_matches, frames_dir, keep_frames, duration, clip_frames),
+                    (c["raw_path"], c["keyword"], rep, device,
+                     clip_threshold, clip_min_matches, frames_dir,
+                     keep_frames, duration, clip_frames),
                 ).result(),
             )
             clip_ok = bool(clip_data and clip_data.get("ok", False)) and (clip_err is None)
-            trace("CLIP", ok=clip_ok, matches=(clip_data or {}).get("matches"), required=(clip_data or {}).get("required"), threshold=clip_threshold)
+            trace(
+                "CLIP",
+                ok=clip_ok,
+                matches=(clip_data or {}).get("matches"),
+                required=(clip_data or {}).get("required"),
+                threshold=clip_threshold,
+            )
 
-            if not clip_ok:
+            # ---- 4. Extra checks (run concurrently in thread pool) ----
+            tname = c["template"]
+            label_it: str = c["label"]
+            keyword_en: str = c["keyword"]
+            template_cat = TEMPLATE_CATEGORY.get(tname, "mixed")
+
+            # Snapshot values for lambdas (avoid late-binding closures)
+            _kf = list(keyframes)
+            _label = str(label_it)
+            _concept = str(keyword_en)
+            _dev = str(device)
+            _yc = float(yolo_conf)
+            _ot = float(owlv2_thresh)
+            _rp = str(c["raw_path"])
+            _tc = template_cat
+
+            extra_futures: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
+
+            if enable_yolo and _tc in ("objects",):
+                yolo_cls = get_yolo_classes_for_label(_label)
+                if yolo_cls and _kf:
+                    _cls = list(yolo_cls)
+                    extra_futures["YOLO"] = loop.run_in_executor(
+                        extra_pool, lambda: check_yolo_on_keyframes(_kf, _cls, _yc)
+                    )
+
+            if enable_blip and _kf:
+                _q = _build_blip_question(_concept, _tc, _label)
+                extra_futures["BLIP"] = loop.run_in_executor(
+                    extra_pool, lambda: check_blip_vqa(_kf, _q, _dev)
+                )
+
+            if enable_grounding and _tc in ("objects", "actions") and _kf:
+                extra_futures["OWLv2"] = loop.run_in_executor(
+                    extra_pool, lambda: check_owlv2_grounding(_kf, _concept, _dev, _ot)
+                )
+
+            if _tc == "colors" and _kf:
+                extra_futures["COLOR"] = loop.run_in_executor(
+                    extra_pool, lambda: check_color_analysis(_kf, _label)
+                )
+
+            if _tc == "lighting" and _kf:
+                extra_futures["PHOTO"] = loop.run_in_executor(
+                    extra_pool, lambda: check_photometric(_kf, _label)
+                )
+
+            if enable_asr:
+                extra_futures["ASR"] = loop.run_in_executor(
+                    extra_pool, lambda: check_asr_transcript(_rp, _concept)
+                )
+
+            if enable_ocr and _kf:
+                extra_futures["OCR"] = loop.run_in_executor(
+                    extra_pool, lambda: check_ocr_keyframes(_kf, _concept)
+                )
+
+            if enable_tracking and len(_kf) >= 2 and _tc in ("objects",):
+                extra_futures["TRACK"] = loop.run_in_executor(
+                    extra_pool, lambda: check_iou_tracking(_kf, _label, _dev)
+                )
+
+            extra_results: Dict[str, Dict[str, Any]] = {}
+            for chk_name, fut in extra_futures.items():
+                try:
+                    result = await fut
+                    extra_results[chk_name] = result
+                    safe = {k: v for k, v in result.items()
+                            if k not in ("ok",) and not isinstance(v, (list, dict))}
+                    trace(chk_name, ok=result.get("ok"), **safe)
+                except Exception as ex:
+                    extra_results[chk_name] = {"ok": None, "error": str(ex)}
+                    trace(chk_name, ok=None, error=str(ex))
+
+            # ---- 5. Majority vote ----
+            verdict, vote_reason, vote_details = majority_vote_gate(
+                clip_ok, extra_results, template_cat
+            )
+
+            if not verdict:
                 stats.clip_fail += 1
-                log_event(worklog_path, {**ctx, "stage": "CLIP", "action": "SKIP", "clip": clip_data, "error": clip_err}, quiet=quiet, gui_bus=gui_bus)
-                remove_with_log(c["raw_path"], worklog_path=worklog_path, quiet=quiet, ctx=ctx, reason="delete_raw_clip_failed", gui_bus=gui_bus)
+                log_event(
+                    worklog_path,
+                    {**ctx, "stage": "DECISION", "action": "REJECT",
+                     "reason": vote_reason, "vote": vote_details,
+                     "trace": c.get("trace", [])},
+                    quiet=quiet, gui_bus=gui_bus,
+                )
+                remove_with_log(
+                    c["raw_path"], worklog_path=worklog_path,
+                    quiet=quiet, ctx=ctx,
+                    reason="delete_raw_majority_failed", gui_bus=gui_bus,
+                )
                 stats.final_fail += 1
-                log_event(worklog_path, {**ctx, "stage": "DECISION", "action": "REJECT", "reason": "clip_failed", "trace": c.get("trace", [])}, quiet=quiet, gui_bus=gui_bus)
-                write_decision(decision="REJECT", reason="clip_failed", w=w, h=h, vertical=vertical, clip_ok=False)
+                write_decision(
+                    decision="REJECT", reason=vote_reason,
+                    w=w, h=h, vertical=vertical, clip_ok=clip_ok,
+                    vote_details=vote_details, extra_res=extra_results,
+                )
                 validate_queue.task_done()
                 continue
 
             stats.clip_ok += 1
-            log_event(worklog_path, {**ctx, "stage": "CLIP", "action": "OK", "clip": clip_data}, quiet=quiet, gui_bus=gui_bus)
+            log_event(
+                worklog_path,
+                {**ctx, "stage": "VOTE", "action": "OK",
+                 "reason": vote_reason, "details": vote_details},
+                quiet=quiet, gui_bus=gui_bus,
+            )
 
             raw_path = c["raw_path"]
             ok_name = os.path.basename(raw_path)
             if not ok_name.startswith("ok_"):
                 ok_name = "ok_" + ok_name
             ok_path = os.path.join(os.path.dirname(raw_path), ok_name)
-            c["raw_path"] = rename_with_log(raw_path, ok_path, worklog_path=worklog_path, quiet=quiet, ctx=ctx, reason="mark_raw_validated", gui_bus=gui_bus)
+            c["raw_path"] = rename_with_log(
+                raw_path, ok_path,
+                worklog_path=worklog_path, quiet=quiet, ctx=ctx,
+                reason="mark_raw_validated", gui_bus=gui_bus,
+            )
 
-            log_event(worklog_path, {**ctx, "stage": "DECISION", "action": "ACCEPT", "reason": "clip_only_ok", "trace": c.get("trace", [])}, quiet=quiet, gui_bus=gui_bus)
-            write_decision(decision="ACCEPT", reason="clip_only_ok", w=w, h=h, vertical=vertical, clip_ok=True)
+            log_event(
+                worklog_path,
+                {**ctx, "stage": "DECISION", "action": "ACCEPT",
+                 "reason": vote_reason, "trace": c.get("trace", [])},
+                quiet=quiet, gui_bus=gui_bus,
+            )
+            write_decision(
+                decision="ACCEPT", reason=vote_reason,
+                w=w, h=h, vertical=vertical, clip_ok=clip_ok,
+                vote_details=vote_details, extra_res=extra_results,
+            )
 
             await encode_queue.put(c)
             validate_queue.task_done()
@@ -1494,6 +2485,14 @@ async def validate_worker(
             except Exception:
                 pass
             validate_queue.task_done()
+
+        finally:
+            # Cleanup temporary keyframe directory
+            if kf_cleanup_dir and os.path.isdir(kf_cleanup_dir):
+                try:
+                    shutil.rmtree(kf_cleanup_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
 
 async def encode_worker(
@@ -1772,6 +2771,12 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
             "clip_threshold": float(args.clip_threshold),
             "clip_min_matches": int(args.clip_min_matches),
             "clip_frames": int(args.clip_frames),
+            "enable_blip": bool(args.enable_blip),
+            "enable_yolo": bool(args.enable_yolo),
+            "enable_grounding": bool(args.enable_grounding),
+            "enable_asr": bool(args.enable_asr),
+            "enable_ocr": bool(args.enable_ocr),
+            "enable_tracking": bool(args.enable_tracking),
             "msg": f"Skip if OUTPUT exists (ids={len(used_output_ids)}) OR ID in worklog (ids={len(processed_ids)}).",
         },
         quiet=args.quiet,
@@ -1797,6 +2802,7 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
 
     clip_pool = ProcessPoolExecutor(max_workers=max(1, int(args.clip_workers)))
     ffmpeg_pool = ProcessPoolExecutor(max_workers=max(1, int(args.ffmpeg_workers)))
+    extra_pool = ThreadPoolExecutor(max_workers=max(1, int(args.extra_workers)))
 
     hb_task: Optional[asyncio.Task] = None
     budget_task: Optional[asyncio.Task] = None
@@ -1862,12 +2868,21 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
                         validate_queue,
                         encode_queue,
                         clip_pool=clip_pool,
+                        extra_pool=extra_pool,
                         device=device,
                         clip_threshold=float(args.clip_threshold),
                         clip_min_matches=int(args.clip_min_matches),
                         clip_frames=int(args.clip_frames),
                         frames_dir=frames_dir,
                         keep_frames=bool(args.debug_keep_frames),
+                        enable_blip=bool(args.enable_blip),
+                        enable_yolo=bool(args.enable_yolo),
+                        enable_grounding=bool(args.enable_grounding),
+                        enable_asr=bool(args.enable_asr),
+                        enable_ocr=bool(args.enable_ocr),
+                        enable_tracking=bool(args.enable_tracking),
+                        yolo_conf=float(args.yolo_conf),
+                        owlv2_thresh=float(args.owlv2_thresh),
                         worklog_path=worklog_path,
                         quiet=args.quiet,
                         stats=stats,
@@ -1992,6 +3007,10 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
             pass
         try:
             ffmpeg_pool.shutdown(wait=True)
+        except Exception:
+            pass
+        try:
+            extra_pool.shutdown(wait=True)
         except Exception:
             pass
 
@@ -2220,7 +3239,9 @@ class GeneratorGUI:
 # ============================================================
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Quiz Video Generator (PEXELS) — majority vote multi-module pipeline."
+    )
 
     ap.add_argument("--gui", action="store_true", help="Avvia GUI")
     ap.add_argument("--output-dir", default=".")
@@ -2268,6 +3289,46 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--pexels-max-width", type=int, default=DEFAULT_PEXELS_MAX_WIDTH)
     ap.add_argument("--pexels-min-width", type=int, default=DEFAULT_PEXELS_MIN_WIDTH)
     ap.add_argument("--pexels-min-duration", type=int, default=DEFAULT_PEXELS_MIN_DURATION)
+
+    # ---- Extra module flags ----
+    ap.add_argument(
+        "--no-blip", dest="enable_blip", action="store_false", default=DEFAULT_ENABLE_BLIP,
+        help="Disabilita BLIP VQA (Salesforce/blip-vqa-base)",
+    )
+    ap.add_argument(
+        "--no-yolo", dest="enable_yolo", action="store_false", default=DEFAULT_ENABLE_YOLO,
+        help="Disabilita YOLO (yolov8n)",
+    )
+    ap.add_argument(
+        "--no-grounding", dest="enable_grounding", action="store_false",
+        default=DEFAULT_ENABLE_GROUNDING,
+        help="Disabilita OWLv2 open-vocabulary grounding",
+    )
+    ap.add_argument(
+        "--enable-asr", dest="enable_asr", action="store_true", default=DEFAULT_ENABLE_ASR,
+        help="Abilita ASR con faster-whisper (lento su CPU, disabilitato di default)",
+    )
+    ap.add_argument(
+        "--enable-ocr", dest="enable_ocr", action="store_true", default=DEFAULT_ENABLE_OCR,
+        help="Abilita OCR con pytesseract (richiede tesseract-ocr, disabilitato di default)",
+    )
+    ap.add_argument(
+        "--no-tracking", dest="enable_tracking", action="store_false",
+        default=DEFAULT_ENABLE_TRACKING,
+        help="Disabilita IOU tracking across keyframes",
+    )
+    ap.add_argument(
+        "--yolo-conf", type=float, default=DEFAULT_YOLO_CONF,
+        help="Soglia di confidenza YOLO (default 0.30)",
+    )
+    ap.add_argument(
+        "--owlv2-thresh", type=float, default=DEFAULT_OWLV2_THRESH,
+        help="Soglia di score OWLv2 (default 0.10)",
+    )
+    ap.add_argument(
+        "--extra-workers", type=int, default=DEFAULT_EXTRA_WORKERS,
+        help="Thread pool size per extra checks (BLIP/YOLO/OWLv2/...) (default 4)",
+    )
 
     return ap
 
