@@ -821,6 +821,31 @@ class GuiEventBus:
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
+def print_debug_paths(*, video_dir: str, output_dir: str, worklog_path: str) -> None:
+    """Print resolved absolute paths and mp4 counts to stdout for diagnostics (--debug-paths)."""
+    sep = "=" * 70
+    print(sep, flush=True)
+    print("[DEBUG_PATHS] Resolved paths and file counts:", flush=True)
+    print(f"  video_dir   = {video_dir}", flush=True)
+    print(f"    exists    = {os.path.isdir(video_dir)}", flush=True)
+    print(f"    mp4_total = {count_mp4_files(video_dir)}", flush=True)
+    output_ids_in_video = scan_existing_output_ids(video_dir)
+    print(f"    output_mp4= {len(output_ids_in_video)}  (non-RAW__ *.mp4 = skippable output IDs)", flush=True)
+    print(f"  output_dir  = {output_dir}", flush=True)
+    print(f"    exists    = {os.path.isdir(output_dir)}", flush=True)
+    print(f"    mp4_total = {count_mp4_files(output_dir)}", flush=True)
+    output_ids_in_out = scan_existing_output_ids(output_dir)
+    print(f"    output_mp4= {len(output_ids_in_out)}  (non-RAW__ *.mp4 = skippable output IDs)", flush=True)
+    print(f"  worklog     = {worklog_path}", flush=True)
+    print(f"    exists    = {os.path.exists(worklog_path)}", flush=True)
+    if os.path.exists(worklog_path):
+        try:
+            size = os.path.getsize(worklog_path)
+            print(f"    size_bytes= {size}", flush=True)
+        except Exception:
+            pass
+    print(sep, flush=True)
+
 def _short(s: str, n: int = 1200) -> str:
     s = s or ""
     return s if len(s) <= n else s[:n] + f"...(truncated,{len(s)} chars)"
@@ -932,18 +957,34 @@ def is_output_file(path: Path) -> bool:
     n = path.name.lower()
     return n.endswith(".mp4") and (not n.startswith("raw__")) and (not n.startswith("ok_raw__"))
 
-def scan_existing_output_ids(video_dir: str) -> set:
+def scan_existing_output_ids(video_dir: str, output_dir: Optional[str] = None) -> set:
+    """Scan *video_dir* (and optionally *output_dir*) for already-completed output mp4 IDs."""
     ids = set()
-    try:
-        for p in Path(video_dir).glob("*.mp4"):
-            if not is_output_file(p):
-                continue
-            pid = extract_pexels_id_from_filename(p.name)
-            if pid is not None:
-                ids.add(pid)
-    except Exception:
-        pass
+    dirs_to_scan = [video_dir]
+    if output_dir:
+        try:
+            if os.path.abspath(output_dir) != os.path.abspath(video_dir):
+                dirs_to_scan.append(output_dir)
+        except Exception:
+            pass
+    for d in dirs_to_scan:
+        try:
+            for p in Path(d).glob("*.mp4"):
+                if not is_output_file(p):
+                    continue
+                pid = extract_pexels_id_from_filename(p.name)
+                if pid is not None:
+                    ids.add(pid)
+        except Exception:
+            pass
     return ids
+
+def count_mp4_files(dir_path: str) -> int:
+    """Return the number of .mp4 files (all kinds) in *dir_path*."""
+    try:
+        return sum(1 for p in Path(dir_path).glob("*.mp4"))
+    except Exception:
+        return 0
 
 def output_id_exists_on_disk(video_dir: str, pid: int) -> bool:
     try:
@@ -2074,6 +2115,10 @@ def prepare_candidates(
 ):
     candidates = []
     attempts = 0
+    skipped_worklog = 0
+    skipped_output = 0
+    skipped_duration = 0
+    skipped_no_url = 0
 
     for v in videos:
         if attempts >= max_attempts:
@@ -2087,17 +2132,21 @@ def prepare_candidates(
             continue
 
         if v_id_int in processed_ids:
+            skipped_worklog += 1
             continue
         if v_id_int in used_output_ids:
+            skipped_output += 1
             continue
         if output_id_exists_on_disk(video_dir, v_id_int):
             used_output_ids.add(v_id_int)
+            skipped_output += 1
             continue
 
         v_dur = v.get("duration")
         if v_dur is not None:
             try:
                 if float(v_dur) < float(pexels_min_duration_s):
+                    skipped_duration += 1
                     continue
             except Exception:
                 pass
@@ -2108,10 +2157,12 @@ def prepare_candidates(
 
         if os.path.exists(mp4_path):
             used_output_ids.add(v_id_int)
+            skipped_output += 1
             continue
 
         video_url = pick_pexels_mp4_link(v, max_width=pexels_max_width, min_width=pexels_min_width)[0]
         if not video_url:
+            skipped_no_url += 1
             continue
 
         attempts += 1
@@ -2125,7 +2176,29 @@ def prepare_candidates(
             "template": tname,
         })
 
-    log_event(worklog_path, {"stage": "CANDIDATES", "action": "OK", "template": tname, "label": correct, "keyword": keyword, "candidate_count": len(candidates), "min_duration": pexels_min_duration_s}, quiet=quiet, gui_bus=gui_bus)
+    skip_info = (
+        f"skip_worklog={skipped_worklog} skip_output={skipped_output} "
+        f"skip_duration={skipped_duration} skip_no_url={skipped_no_url}"
+    )
+    log_event(
+        worklog_path,
+        {
+            "stage": "CANDIDATES",
+            "action": "OK",
+            "template": tname,
+            "label": correct,
+            "keyword": keyword,
+            "candidate_count": len(candidates),
+            "min_duration": pexels_min_duration_s,
+            "skipped_worklog": skipped_worklog,
+            "skipped_output": skipped_output,
+            "skipped_duration": skipped_duration,
+            "skipped_no_url": skipped_no_url,
+            "msg": f"candidates={len(candidates)} {skip_info}",
+        },
+        quiet=quiet,
+        gui_bus=gui_bus,
+    )
     return candidates
 
 
@@ -2705,6 +2778,13 @@ async def producer_loop(
         for c in candidates:
             await download_queue.put(c)
 
+        if not quiet:
+            print(
+                f"[QUEUE] ENQUEUE | label={correct} keyword={keyword} | "
+                f"enqueued={len(candidates)} download_q={download_queue.qsize()}",
+                flush=True,
+            )
+
 
 # ============================================================
 #                 RUN PIPELINE
@@ -2715,11 +2795,26 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
     video_dir = os.path.abspath(args.video_dir or os.path.join(output_dir, "video"))
     frames_dir = os.path.abspath(args.frames_dir or os.path.join(output_dir, "frames"))
     quiz_path = os.path.join(output_dir, args.output)
-    worklog_path = os.path.join(output_dir, args.worklog)
+    # Resolve worklog: if user gave an absolute path use it directly, otherwise put it
+    # inside output_dir.  os.path.join already handles absolute args on Windows, but we
+    # also call abspath for full normalisation on both platforms.
+    worklog_path = os.path.abspath(
+        args.worklog if os.path.isabs(args.worklog) else os.path.join(output_dir, args.worklog)
+    )
     decisions_csv = os.path.join(output_dir, "decisions.csv")
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(video_dir, exist_ok=True)
+    # Ensure worklog parent directory exists and touch the file early so that the
+    # user can always find it (even if the pipeline is later interrupted).
+    _wl_dir = os.path.dirname(worklog_path)
+    if _wl_dir:
+        os.makedirs(_wl_dir, exist_ok=True)
+    try:
+        with open(worklog_path, "a", encoding="utf-8"):
+            pass
+    except Exception:
+        pass
     if args.debug_keep_frames:
         os.makedirs(frames_dir, exist_ok=True)
 
@@ -2749,8 +2844,21 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
     if not active_templates:
         raise SystemExit("ERRORE: nessun template valido.")
 
-    used_output_ids = scan_existing_output_ids(video_dir)
-    processed_ids = scan_processed_ids_from_worklog(worklog_path)
+    # --debug-paths: print resolved absolute paths before scanning anything
+    if getattr(args, "debug_paths", False):
+        print_debug_paths(video_dir=video_dir, output_dir=output_dir, worklog_path=worklog_path)
+
+    # Scan existing output IDs from both video_dir and output_dir (union)
+    if getattr(args, "ignore_existing_output", False):
+        used_output_ids: set = set()
+    else:
+        used_output_ids = scan_existing_output_ids(video_dir, output_dir)
+
+    # Load already-processed IDs from worklog (skipped by --reset-worklog)
+    if getattr(args, "reset_worklog", False):
+        processed_ids: set = set()
+    else:
+        processed_ids = scan_processed_ids_from_worklog(worklog_path)
 
     stats = PipelineStats()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -2777,7 +2885,12 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
             "enable_asr": bool(args.enable_asr),
             "enable_ocr": bool(args.enable_ocr),
             "enable_tracking": bool(args.enable_tracking),
-            "msg": f"Skip if OUTPUT exists (ids={len(used_output_ids)}) OR ID in worklog (ids={len(processed_ids)}).",
+            "reset_worklog": bool(getattr(args, "reset_worklog", False)),
+            "ignore_existing_output": bool(getattr(args, "ignore_existing_output", False)),
+            "msg": (
+                f"Skip if OUTPUT exists (ids={len(used_output_ids)}) OR ID in worklog (ids={len(processed_ids)}). "
+                f"Use --reset-worklog or --ignore-existing-output to bypass."
+            ),
         },
         quiet=args.quiet,
         gui_bus=gui_bus,
@@ -3252,6 +3365,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--output", default="domande_quiz_video.txt")
     ap.add_argument("--worklog", default="work_log.jsonl")
     ap.add_argument("--secrets", default="secrets.json")
+
+    ap.add_argument(
+        "--debug-paths",
+        action="store_true",
+        help=(
+            "Print absolute resolved paths (video_dir, output_dir, worklog) "
+            "and mp4 file counts before the pipeline starts. "
+            "Useful for diagnosing path/skip issues on Windows."
+        ),
+    )
+    ap.add_argument(
+        "--reset-worklog",
+        action="store_true",
+        help=(
+            "Ignore IDs stored in the worklog for this run (start fresh). "
+            "The worklog file itself is NOT deleted; new events are still appended."
+        ),
+    )
+    ap.add_argument(
+        "--ignore-existing-output",
+        action="store_true",
+        help=(
+            "Do not skip video IDs that already have an output mp4 on disk. "
+            "Useful when re-running on a clean folder that has been misdetected as non-empty."
+        ),
+    )
 
     ap.add_argument("--target-questions", type=int, default=5)
     ap.add_argument("--templates", default="sports,sports_2,sports_3,animals,animals_wild,animals_more,animals_sea,colors,colors_2,lighting,emotions,people_actions,family,vehicles,vehicles_2,traffic,weather,weather_2,seasons,food,food_2,drinks,nature,nature_2,plants,tech,tech_2,gaming,places,places_2,travel,music,dance,concert,jobs,jobs_2,jobs_3,objects")
