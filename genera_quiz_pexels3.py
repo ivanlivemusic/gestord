@@ -204,7 +204,7 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
         "CANGURO": ["kangaroo", "kangaroos", "kangaroo wildlife", "kangaroo australia"],
         "BRADIPO": ["sloth", "sloths", "sloth animal", "sloth tree"],
         "PUMA": ["cougar", "puma", "mountain lion", "puma wildlife"],
-        "IPPPOPOTAMO": ["hippopotamus", "hippo", "hippos", "hippo river"],
+        "IPPOPOTAMO": ["hippopotamus", "hippo", "hippos", "hippo river"],
         "CINGHIALE": ["wild boar", "boar", "wild boar forest", "boar wildlife"],
     }},
     "animals_sea": {"question": "Quale animale marino vedi nel video?", "labels": {
@@ -671,7 +671,7 @@ YOLO_LABEL_MAP: Dict[str, List[str]] = {
     "LEOPARDO": ["cat"], "PANDA": ["bear"], "VOLPE": ["dog"],
     "SCIMMIA": [], "PROCIONE": [], "GUFO": ["bird"],
     "CANGURO": [], "BRADIPO": [], "PUMA": ["cat"],
-    "IPPPOPOTAMO": [], "CINGHIALE": [],
+    "IPPOPOTAMO": [], "CINGHIALE": [],
     # Sea animals
     "DELFINO": [], "SQUALO": [], "BALENA": [],
     "MEDUSA": [], "POLPO": [], "FOCA": [],
@@ -1759,7 +1759,7 @@ def check_photometric(
                     maxc = np.max(arr, axis=2)
                     minc = np.min(arr, axis=2)
                     sat = np.where(maxc > 0, (maxc - minc) / (maxc + 1e-7), 0.0)
-                    sat_ratio = float(np.mean(sat > 0.5 * 255.0 / 255.0))
+                    sat_ratio = float(np.mean(sat > 0.5))
                     ok_frame = sat_ratio >= rule_config["sat_ratio"]
                 elif rule == "bright_contrasty":
                     ok_frame = (mean_br >= rule_config.get("min_mean_brightness", 100)
@@ -1895,7 +1895,7 @@ def check_iou_tracking(
                         continue
                     for cls_id, box in zip(r.boxes.cls.tolist(), r.boxes.xyxyn.tolist()):
                         if model.names[int(cls_id)].lower() in tc_lower:
-                            frame_boxes.append(tuple(float(x) for x in box[:4]))  # type: ignore[arg-type]
+                            frame_boxes.append((float(box[0]), float(box[1]), float(box[2]), float(box[3])))
             except Exception:
                 pass
             all_boxes.append(frame_boxes)

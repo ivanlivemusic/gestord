@@ -1,5 +1,5 @@
 # ============================================================
-# requirements_quiz.txt — dipendenze per genera_quiz_pexels3.py
+# requirements_quiz.txt -- dipendenze per genera_quiz_pexels3.py
 #
 # Installazione:
 #   pip install -r requirements_quiz.txt
