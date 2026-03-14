@@ -1460,6 +1460,166 @@ def _load_whisper():
     return _WHISPER_MODEL_OBJ
 
 
+# ============================================================
+#   WARMUP STAGE — pre-download / initialise all AI models
+#   before starting the Pexels download pipeline.
+#
+#   Logs stage=WARMUP with action=START / OK / FAIL for every
+#   model step.  Prints resolved HuggingFace / Torch cache dirs
+#   for easy debugging on Windows.
+# ============================================================
+
+def _warmup_print_cache_paths() -> None:
+    """Print resolved AI model cache directories (HF, Transformers, Torch)."""
+    hf_home = os.path.abspath(
+        os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    )
+    tf_cache = os.path.abspath(
+        os.environ.get("TRANSFORMERS_CACHE") or os.path.join(hf_home, "hub")
+    )
+    torch_home = os.path.abspath(
+        os.environ.get("TORCH_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "torch")
+    )
+    print("[WARMUP] Cache paths:", flush=True)
+    print(f"  HF_HOME           = {hf_home}", flush=True)
+    print(f"  TRANSFORMERS_CACHE= {tf_cache}", flush=True)
+    print(f"  TORCH_HOME        = {torch_home}", flush=True)
+
+
+def warmup_models(
+    *,
+    device: str,
+    enable_blip: bool,
+    enable_yolo: bool,
+    enable_grounding: bool,
+    enable_asr: bool,
+    enable_ocr: bool,
+    enable_tracking: bool,
+    asr_model: str,
+    worklog_path: str,
+    quiet: bool,
+    soft_fail: bool,
+    gui_bus: Optional["GuiEventBus"] = None,
+) -> None:
+    """Download / initialise all AI model weights before the pipeline starts.
+
+    Each step is logged as stage=WARMUP action=START|OK|FAIL.
+    If *soft_fail* is False (default), a failure raises RuntimeError.
+    If *soft_fail* is True, failures are logged as FAIL and execution continues.
+    """
+    _warmup_print_cache_paths()
+
+    def _step(name: str, fn) -> None:
+        log_event(
+            worklog_path,
+            {"stage": "WARMUP", "action": "START", "model": name, "msg": f"Initialising {name}"},
+            quiet=quiet,
+            gui_bus=gui_bus,
+        )
+        t0 = time.time()
+        try:
+            fn()
+            dt = round(time.time() - t0, 2)
+            log_event(
+                worklog_path,
+                {
+                    "stage": "WARMUP", "action": "OK", "model": name, "seconds": dt,
+                    "msg": f"{name} ready ({dt}s)",
+                },
+                quiet=quiet,
+                gui_bus=gui_bus,
+            )
+        except Exception as exc:
+            dt = round(time.time() - t0, 2)
+            msg = f"{name} warmup failed after {dt}s: {exc}"
+            log_event(
+                worklog_path,
+                {
+                    "stage": "WARMUP", "action": "FAIL", "model": name, "seconds": dt,
+                    "reason": str(exc), "msg": msg,
+                },
+                quiet=quiet,
+                gui_bus=gui_bus,
+            )
+            if not soft_fail:
+                raise RuntimeError(msg) from exc
+
+    def _skip(name: str, reason: str) -> None:
+        log_event(
+            worklog_path,
+            {"stage": "WARMUP", "action": "SKIP", "model": name, "msg": reason},
+            quiet=quiet,
+            gui_bus=gui_bus,
+        )
+
+    # CLIP — always required
+    _step("CLIP", lambda: _load_clip_model(device=device))
+
+    # BLIP VQA
+    if enable_blip:
+        _step("BLIP_VQA", _load_blip_vqa)
+    else:
+        _skip("BLIP_VQA", "disabled via --no-blip")
+
+    # YOLO
+    if enable_yolo:
+        _step("YOLO", _load_yolo)
+    else:
+        _skip("YOLO", "disabled via --no-yolo")
+
+    # OWLv2 open-vocabulary grounding
+    if enable_grounding:
+        _step("OWLv2", _load_owlv2)
+    else:
+        _skip("OWLv2", "disabled via --no-grounding")
+
+    # Tracking — depends on YOLO; no extra model file, just validate imports
+    if enable_tracking:
+        def _check_tracking():
+            # IOU tracking is pure-Python (no extra weights); just verify the
+            # ultralytics import is available (YOLO was already loaded above).
+            try:
+                from ultralytics import YOLO as _YOLO  # noqa: F401
+            except ImportError as e:
+                raise ImportError(f"ultralytics not available for tracking: {e}") from e
+        _step("TRACKING", _check_tracking)
+    else:
+        _skip("TRACKING", "disabled via --no-tracking")
+
+    # ASR (faster-whisper)
+    if enable_asr:
+        def _load_asr_model():
+            global _WHISPER_MODEL_OBJ
+            with _WHISPER_LOCK:
+                if _WHISPER_MODEL_OBJ is None:
+                    from faster_whisper import WhisperModel
+                    _WHISPER_MODEL_OBJ = WhisperModel(asr_model, device="cpu", compute_type="int8")
+        _step(f"ASR(faster-whisper/{asr_model})", _load_asr_model)
+    else:
+        _skip("ASR", "disabled (use --enable-asr to activate)")
+
+    # OCR (pytesseract / tesseract binary)
+    if enable_ocr:
+        def _check_ocr():
+            try:
+                import pytesseract  # type: ignore
+                ver = pytesseract.get_tesseract_version()
+                log_event(
+                    worklog_path,
+                    {
+                        "stage": "WARMUP", "action": "INFO", "model": "OCR",
+                        "msg": f"tesseract version {ver}",
+                    },
+                    quiet=quiet,
+                    gui_bus=gui_bus,
+                )
+            except Exception as e:
+                raise RuntimeError(f"tesseract/pytesseract not available: {e}") from e
+        _step("OCR", _check_ocr)
+    else:
+        _skip("OCR", "disabled (use --enable-ocr to activate)")
+
+
 # ---- Shot detection + keyframe extraction ----
 
 def extract_keyframes_for_validation(
@@ -2824,24 +2984,25 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
     secrets_path = os.path.abspath(secrets_path)
 
     pexels_api_key = resolve_pexels_key(secrets_path=secrets_path)
-    if not pexels_api_key:
+    _warmup_only = getattr(args, "warmup_only", False)
+    if not pexels_api_key and not _warmup_only:
         log_event(worklog_path, {"stage": "INIT", "action": "FAIL", "reason": "missing_pexels_api_key", "secrets": secrets_path}, quiet=args.quiet, gui_bus=gui_bus)
         raise SystemExit(f"ERRORE: PEXELS_API_KEY mancante. Mettila in {secrets_path} oppure in ENV.")
 
     random.seed(args.seed)
     assert_templates_min_labels(10)
 
-    if int(args.max_seconds) != 30:
+    if not _warmup_only and int(args.max_seconds) != 30:
         raise SystemExit("ERRORE: durata fissa richiesta = 30s. Usa --max-seconds 30.")
 
-    if not ffmpeg_path():
+    if not _warmup_only and not ffmpeg_path():
         raise SystemExit("ERRORE: ffmpeg non trovato nel PATH.")
-    if not have_encoder("libx265"):
+    if not _warmup_only and not have_encoder("libx265"):
         raise SystemExit("ERRORE: ffmpeg non ha l'encoder libx265.")
 
     active_templates = [t.strip().lower() for t in args.templates.split(",") if t.strip()]
     active_templates = [t for t in active_templates if t in TEMPLATES]
-    if not active_templates:
+    if not _warmup_only and not active_templates:
         raise SystemExit("ERRORE: nessun template valido.")
 
     # --debug-paths: print resolved absolute paths before scanning anything
@@ -2895,6 +3056,51 @@ async def run_pipeline(args: argparse.Namespace, *, gui_bus: Optional[GuiEventBu
         quiet=args.quiet,
         gui_bus=gui_bus,
     )
+
+    # ---- WARMUP: pre-download all AI model weights before starting downloads ----
+    run_warmup = getattr(args, "run_warmup", True)
+    warmup_only = getattr(args, "warmup_only", False)
+    if run_warmup or warmup_only:
+        try:
+            warmup_models(
+                device=device,
+                enable_blip=bool(args.enable_blip),
+                enable_yolo=bool(args.enable_yolo),
+                enable_grounding=bool(args.enable_grounding),
+                enable_asr=bool(args.enable_asr),
+                enable_ocr=bool(args.enable_ocr),
+                enable_tracking=bool(args.enable_tracking),
+                asr_model=getattr(args, "asr_model", "tiny"),
+                worklog_path=worklog_path,
+                quiet=args.quiet,
+                soft_fail=bool(getattr(args, "warmup_soft_fail", False)),
+                gui_bus=gui_bus,
+            )
+        except RuntimeError as _wu_exc:
+            log_event(
+                worklog_path,
+                {
+                    "stage": "WARMUP", "action": "ABORT", "reason": str(_wu_exc),
+                    "msg": "Warmup failed — aborting pipeline. Use --warmup-soft-fail to continue anyway.",
+                },
+                quiet=args.quiet,
+                gui_bus=gui_bus,
+            )
+            raise SystemExit(f"ERRORE warmup: {_wu_exc}") from _wu_exc
+        log_event(
+            worklog_path,
+            {"stage": "WARMUP", "action": "DONE", "msg": "All models ready — starting pipeline."},
+            quiet=args.quiet,
+            gui_bus=gui_bus,
+        )
+    if warmup_only:
+        log_event(
+            worklog_path,
+            {"stage": "WARMUP", "action": "EXIT", "msg": "--warmup-only: exiting after warmup."},
+            quiet=args.quiet,
+            gui_bus=gui_bus,
+        )
+        return 0
 
     questions: List[Dict[str, Any]] = []
     quiz_hashes = set()
@@ -3467,6 +3673,45 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--extra-workers", type=int, default=DEFAULT_EXTRA_WORKERS,
         help="Thread pool size per extra checks (BLIP/YOLO/OWLv2/...) (default 4)",
+    )
+
+    # ---- Warmup / prefetch flags ----
+    ap.add_argument(
+        "--warmup-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Download / initialise all AI model weights (CLIP, BLIP, YOLO, OWLv2, ASR, OCR) "
+            "and then exit WITHOUT starting the Pexels download pipeline. "
+            "Useful for pre-caching models before the first real run."
+        ),
+    )
+    ap.add_argument(
+        "--no-warmup",
+        dest="run_warmup",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip the model warmup/prefetch stage and go straight to the Pexels pipeline "
+            "(replicates the original behaviour before this feature was added)."
+        ),
+    )
+    ap.add_argument(
+        "--warmup-soft-fail",
+        action="store_true",
+        default=False,
+        help=(
+            "If a model fails to download during warmup, log a FAIL event and continue "
+            "instead of aborting. By default any warmup failure is fatal."
+        ),
+    )
+    ap.add_argument(
+        "--asr-model",
+        default="tiny",
+        help=(
+            "faster-whisper model size to pre-download during warmup when --enable-asr is set "
+            "(e.g. tiny, base, small, medium). Default: tiny."
+        ),
     )
 
     return ap
